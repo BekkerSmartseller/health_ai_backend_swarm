@@ -1,45 +1,48 @@
-# Используем официальный образ uv с предустановленным Python 3.13
+# Используем официальный образ uv с Python 3.13
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Копируем файлы зависимостей
-COPY pyproject.toml uv.lock* README.md ./
+# Копируем только requirements.txt
+COPY requirements.txt .
 
-# Устанавливаем зависимости проекта в виртуальное окружение
-# Флаг --frozen гарантирует, что uv не будет пытаться изменить файл uv.lock
-RUN uv sync --frozen --no-dev
+# Создаём виртуальное окружение и устанавливаем зависимости
+RUN uv venv /app/.venv && \
+    uv pip install --no-cache -r requirements.txt && \
+    playwright install chromium && \
+    playwright install-deps chromium
 
 # Финальный образ
 FROM python:3.13-slim-bookworm
 
 WORKDIR /app
 
-# Копируем виртуальное окружение из образа builder
+# Копируем виртуальное окружение и браузеры Playwright из билдера
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-# Копируем исходный код приложения
+# Копируем весь исходный код
 COPY . .
 
-# Добавляем виртуальное окружение в PATH
+# Настраиваем PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Переменные окружения для продакшена
+# Переменные окружения
 ENV MODE=PROD
 ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-# Создаём директорию для загруженных изображений
+# Создаём директорию для загружаемых изображений
 RUN mkdir -p /app/static/uploads/blog
-
-# Устанавливаем рабочую директорию (опционально)
-# WORKDIR /app
 
 # Открываем порт
 EXPOSE 6575
 
-# Healthcheck
+# Healthcheck (требует наличия curl в финальном образе)
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:6575/health || exit 1
 
-# Команда для запуска
+# Запуск
 CMD ["uvicorn", "main:asgi_app", "--host", "0.0.0.0", "--port", "6575"]
