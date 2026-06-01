@@ -2,7 +2,7 @@ services:
   backend:
     build:
       context: . # Use an image built from the specified dockerfile in the current directory.
-      dockerfile: ./auth_server.Dockerfile
+      dockerfile: ./backend.Dockerfile
     environment:
       - MODE=PROD
     container_name: health-ai-backend
