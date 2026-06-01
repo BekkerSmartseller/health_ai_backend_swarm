@@ -11,7 +11,7 @@ class ProjectConfig(BaseSettings):
     HOST: str = '0.0.0.0'
     PORT: int = 6575
     DEBUG: bool = False
-    WORKERS=1
+    WORKERS: int =1
 
     HINDSIGHT_URL: str = "http://localhost:8888"
 
