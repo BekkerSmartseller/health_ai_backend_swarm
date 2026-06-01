@@ -72,7 +72,8 @@ class ProjectConfig(BaseSettings):
             self.REDIS_CACHE_PORT = 6379
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/0"
             self.POSTGRES = "postgres://postgres:cZejbGF7WE5Xr4KQsD83@192.168.1.51:5432/postgres"
-            self.ALLOWED_ORIGINS = ["http://localhost:5173","http://localhost:5174", "http://localhost:3000","https://medexpertai.ru"]
+            # self.ALLOWED_ORIGINS = ["http://localhost:5173","http://localhost:5174", "http://localhost:3000","https://medexpertai.ru"]
+            self.ALLOWED_ORIGINS = ["*"]
             self.DEBUG = False
             self.WORKERS = 4
         else:
