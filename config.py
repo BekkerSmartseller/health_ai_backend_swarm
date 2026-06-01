@@ -67,7 +67,7 @@ class ProjectConfig(BaseSettings):
     def set_dynamic_config(self) -> 'ProjectConfig':
         if self.MODE == 'PROD':
             self.REDIS_MQ = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/2"
-            self.HINDSIGHT_URL: str = "http://localhost:8888"
+            self.HINDSIGHT_URL: str = "http://192.168.1.100:8888"
             self.REDIS_CACHE_HOST = "192.168.1.100"
             self.REDIS_CACHE_PORT = 6379
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/0"
