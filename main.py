@@ -122,6 +122,7 @@ jwt_admin_auth = JWTCookieAuth[AdminUser](
     token_secret=config.JWT_SECRET,
     exclude=[
         "/admin/login",
+        "/health",
         # "/admin/logout",
         
         # 🔥 ВАЖНО: Используем r"^/..." (raw string с якорем начала строки)
