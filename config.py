@@ -13,6 +13,8 @@ class ProjectConfig(BaseSettings):
     DEBUG: bool = False
     WORKERS: int =1
 
+    PUBLIC_SITE_URL: str = "https://medexpertai.ru"
+
     HINDSIGHT_URL: str = "http://localhost:8888"
 
     # JWT настройки

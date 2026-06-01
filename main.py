@@ -25,6 +25,7 @@ import markdown
 from typing import List, Optional,Any
 from datetime import datetime
 from bs4 import BeautifulSoup
+import html
 
 import socketio
 from litestar import Litestar, post,put, get,delete, Request,Response
@@ -761,6 +762,78 @@ async def upload_image(request: Request[AdminUser, Token, Any], file: UploadFile
     url = f"/uploads/blog/{new_name}"
     return {"url": url}
 
+
+# ==================== sitemap.xml ====================
+
+
+@get("/sitemap.xml", status_code=200)
+async def sitemap_xml() -> Response:
+    """
+    Генерирует sitemap.xml. 
+    Если БД недоступна, отдаёт sitemap только со статическими страницами (не падает с 500).
+    """
+    PUBLIC_SITE_URL = getattr(config, 'PUBLIC_SITE_URL', 'https://medexpertai.ru')
+    
+    static_paths = ['/', '/chat', '/blog', '/privacy', '/terms', '/offer', '/security', '/refund']
+    
+    xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml_parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
+    
+    # 1. Добавляем статические страницы
+    for path in static_paths:
+        priority = '1.0' if path == '/' else '0.6'
+        xml_parts.append(f'''
+  <url>
+    <loc>{PUBLIC_SITE_URL}{path}</loc>
+    <priority>{priority}</priority>
+  </url>''')
+    
+    # 2. Пытаемся получить статьи из БД
+    if blog_pg_pool is not None:
+        try:
+            # 🔥 Устанавливаем таймаут 5 секунд, чтобы не висеть вечно
+            async with blog_pg_pool.acquire(timeout=5.0) as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT slug, updated_at, published_at 
+                    FROM blog_posts 
+                    ORDER BY published_at DESC
+                    """,
+                    timeout=5.0
+                )
+            
+            for row in rows:
+                slug = row['slug']
+                lastmod = row['updated_at'] or row['published_at']
+                # Форматируем дату для sitemap (YYYY-MM-DD)
+                if hasattr(lastmod, 'strftime'):
+                    lastmod_str = lastmod.strftime('%Y-%m-%d')
+                else:
+                    lastmod_str = str(lastmod)[:10]
+                    
+                safe_slug = html.escape(str(slug))
+                
+                xml_parts.append(f'''
+  <url>
+    <loc>{PUBLIC_SITE_URL}/blog/{safe_slug}</loc>
+    <lastmod>{lastmod_str}</lastmod>
+    <priority>0.8</priority>
+  </url>''')
+                
+        except Exception as e:
+            # Если БД лежит, логируем ошибку, но продолжаем генерацию
+            logger.error(f"[sitemap] DB error, generating without posts: {e}")
+    else:
+        logger.warning("[sitemap] blog_pg_pool is None, skipping posts")
+    
+    xml_parts.append('\n</urlset>')
+    
+    return Response(
+        content=''.join(xml_parts),
+        media_type="application/xml",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
+
 # ==================== SECURITY ====================
 
 @post("/admin/login")
@@ -804,6 +877,7 @@ litestar_app = Litestar(
         admin_update_post,
         admin_delete_post,
         upload_image,
+        sitemap_xml,
         health
     ],
     cors_config = CORSConfig(
