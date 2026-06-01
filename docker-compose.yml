@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: . # Use an image built from the specified dockerfile in the current directory.
+      dockerfile: ./health_ai_backend_swarm/auth_server.Dockerfile
+    environment:
+      - MODE=PROD
+    container_name: health-ai-backend
+    restart: unless-stopped
+    ports:
+      - "6585:6575"
+    # volumes:
+    #   - ./static/uploads:/app/static/uploads
