@@ -1,43 +1,45 @@
-# health_ai_backend_swarm/Dockerfile
-FROM ghcr.io/astral-sh/uv:python3.11 AS builder
+# Используем официальный образ uv с предустановленным Python 3.13
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Копируем зависимости
-COPY pyproject.toml uv.lock* requirements.txt ./
+# Копируем файлы зависимостей
+COPY pyproject.toml uv.lock* README.md ./
 
-# Устанавливаем зависимости в виртуальное окружение
-RUN uv venv /app/.venv && \
-    uv pip install --no-cache -r requirements.txt && \
-    playwright install chromium && \
-    playwright install-deps chromium
+# Устанавливаем зависимости проекта в виртуальное окружение
+# Флаг --frozen гарантирует, что uv не будет пытаться изменить файл uv.lock
+RUN uv sync --frozen --no-dev
 
 # Финальный образ
-FROM python:3.11-slim
+FROM python:3.13-slim-bookworm
 
 WORKDIR /app
 
-# Копируем виртуальное окружение из билдера
+# Копируем виртуальное окружение из образа builder
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-# Копируем исходники
+# Копируем исходный код приложения
 COPY . .
 
-# Настройка PATH
+# Добавляем виртуальное окружение в PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Переменные окружения (можно переопределить через docker-compose)
+# Переменные окружения для продакшена
 ENV MODE=PROD
 ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 # Создаём директорию для загруженных изображений
 RUN mkdir -p /app/static/uploads/blog
 
+# Устанавливаем рабочую директорию (опционально)
+# WORKDIR /app
+
+# Открываем порт
 EXPOSE 6575
 
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:6575/health || exit 1
 
+# Команда для запуска
 CMD ["uvicorn", "main:asgi_app", "--host", "0.0.0.0", "--port", "6575"]
