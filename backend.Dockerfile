@@ -1,18 +1,15 @@
-# Сборочный этап: устанавливаем Python-зависимости и браузеры
+# Сборочный этап
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Копируем файл зависимостей
 COPY requirements.txt .
 
-# Создаём виртуальное окружение и устанавливаем пакеты
+# Устанавливаем зависимости и отдельно playwright (если его нет в requirements.txt)
 RUN uv venv /app/.venv && \
-    uv pip install --no-cache -r requirements.txt
-
-# Устанавливаем браузер Chromium и его системные зависимости
-# Используем полный путь к playwright внутри .venv
-RUN /app/.venv/bin/playwright install chromium && \
+    uv pip install --no-cache -r requirements.txt && \
+    uv pip install --no-cache playwright && \
+    /app/.venv/bin/playwright install chromium && \
     /app/.venv/bin/playwright install-deps chromium
 
 # Финальный образ
@@ -24,24 +21,18 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-# Устанавливаем системные зависимости для Chromium (необходимы в финальном образе)
+# Устанавливаем системные зависимости для Chromium (в финальном образе)
 RUN /app/.venv/bin/playwright install-deps chromium
 
-# Копируем исходный код приложения
 COPY . .
 
-# Добавляем .venv/bin в PATH
 ENV PATH="/app/.venv/bin:$PATH"
-
-# Переменные окружения для продакшена
 ENV MODE=PROD
 ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-# Создаём директорию для загружаемых изображений
 RUN mkdir -p /app/static/uploads/blog
 
-# Устанавливаем curl для healthcheck (уже может быть, но на всякий случай)
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 6575
