@@ -783,6 +783,11 @@ async def admin_logout() -> Response:
     return response
 
 # ==================== LITESTAR APP + SOCKET.IO ASGI ====================
+
+@get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
 litestar_app = Litestar(
     route_handlers=[
         get_chat_history,
@@ -798,6 +803,7 @@ litestar_app = Litestar(
         admin_update_post,
         admin_delete_post,
         upload_image,
+        health
     ],
     cors_config = CORSConfig(
         allow_origins=config.ALLOWED_ORIGINS,
