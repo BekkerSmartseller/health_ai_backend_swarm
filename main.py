@@ -689,6 +689,7 @@ async def blog_posts(request: Request, page: int = 1, limit: int = 10, tag: Opti
 
 @get("/blog/posts/{slug:str}")
 async def blog_post(request: Request, slug: str) -> dict:
+    print("Origin header:", request.headers.get("origin"))
     post = await get_post_by_slug(slug)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
