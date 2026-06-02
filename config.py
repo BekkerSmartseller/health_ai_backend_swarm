@@ -60,7 +60,7 @@ class ProjectConfig(BaseSettings):
     # Модели, которые загружаются для всех агентов
     DEFAULT_MENTAL_MODEL_IDS: List[str] = ["user-profile", "active-tasks", "personality-type"]
 
-    ALLOWED_ORIGINS: List[str] = []
+    ALLOWED_ORIGINS: List[str] = ["http://localhost:5173","http://192.168.1.100:5173", "http://192.168.1.100:6585", "http://localhost:5174", "http://localhost:3000","https://medexpertai.ru","https://api.medexpertai.ru"]
     
 
     @model_validator(mode='after')
@@ -72,8 +72,6 @@ class ProjectConfig(BaseSettings):
             self.REDIS_CACHE_PORT = 6379
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/0"
             self.POSTGRES = "postgres://postgres:cZejbGF7WE5Xr4KQsD83@192.168.1.51:5432/postgres"
-            # self.ALLOWED_ORIGINS = ["http://localhost:5173","http://localhost:5174", "http://localhost:3000","https://medexpertai.ru"]
-            self.ALLOWED_ORIGINS = ["*"]
             self.DEBUG = False
             self.WORKERS = 4
         else:
@@ -83,7 +81,6 @@ class ProjectConfig(BaseSettings):
             self.REDIS_CACHE_PORT = 63799
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@91.122.158.124:63799/0"
             self.POSTGRES = "postgres://postgres:cZejbGF7WE5Xr4KQsD83@91.122.158.124:54329/postgres"
-            self.ALLOWED_ORIGINS = ["http://localhost:5173","http://localhost:5174", "http://localhost:3000","https://medexpertai.ru"]
             self.DEBUG = True
             self.WORKERS = 1
 
