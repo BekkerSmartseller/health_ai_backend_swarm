@@ -72,7 +72,7 @@ class ProjectConfig(BaseSettings):
             self.REDIS_CACHE_PORT = 6379
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/0"
             self.POSTGRES = "postgres://postgres:cZejbGF7WE5Xr4KQsD83@192.168.1.51:5432/postgres"
-            self.DEBUG = False
+            self.DEBUG = True
             self.WORKERS = 4
         else:
             self.REDIS_MQ = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@91.122.158.124:63798/2"
