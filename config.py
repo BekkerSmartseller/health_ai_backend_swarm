@@ -60,7 +60,7 @@ class ProjectConfig(BaseSettings):
     # Модели, которые загружаются для всех агентов
     DEFAULT_MENTAL_MODEL_IDS: List[str] = ["user-profile", "active-tasks", "personality-type"]
 
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:5173","http://192.168.1.100:5173", "http://192.168.1.100:6585", "http://localhost:5174", "http://localhost:3000","https://medexpertai.ru","https://api.medexpertai.ru"]
+    ALLOWED_ORIGINS: List[str] = ["http://localhost:5173","http://192.168.1.100:5173", "http://192.168.1.100:6585", "http://localhost:5174", "http://localhost:3000","https://medexpertai.ru","https://api.medexpertai.ru", "http://backend:6575","http://frontend:3002" ]
     
 
     @model_validator(mode='after')
