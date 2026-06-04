@@ -16,17 +16,17 @@ import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
-from datetime import datetime,timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import os
 import re
 import json
 import markdown
 from typing import List, Optional,Any
+from datetime import datetime
 from bs4 import BeautifulSoup
 import html
 import socketio
-import jwt
 
 from litestar import Litestar, post,put, get,delete, Request,Response
 from litestar.exceptions import HTTPException,NotAuthorizedException
@@ -57,13 +57,7 @@ from config import config
 from services.hindsight_memory import HindsightMemoryLayer
 from graph.swarm_workflow import get_compiled_graph
 
-from services.user_db import (
-    init_user_db, get_user_by_id, get_user_by_email,
-    get_comments, create_comment, 
-    add_like, remove_like, get_like_count,get_comments_count,
-    update_user_profile_by_id,set_comment_reaction,
-    get_user_comment_reaction
-)
+from services.user_db import init_user_db, get_user_by_id
 from routes.auth import AuthController, init_redis
 # from routes.blog_comments_likes import BlogInteractionController  # создадим ниже
 from services.blog_db import (
@@ -92,84 +86,6 @@ blog_pg_pool = None
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 active_sessions: Dict[str, str] = {}
 
-
-# ---------- JWT для пользователей и админа ----------
-
-async def _get_user_from_request(request: Request):
-    """Извлекает пользователя из куки token (опционально, без ошибок)."""
-    token = request.cookies.get("token")
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
-        user_id = payload.get("sub")
-        print("_get_user_from_request user: ", user_id)
-
-        if user_id:
-            user = await get_user_by_id(user_id)
-            if user and user.get("is_active"):
-                return user
-    except Exception:
-        pass
-    return None
-
-async def retrieve_user(token: Token, conn: ASGIConnection):
-    sub = token.sub
-    if sub == "admin":
-        # админ (существующая логика)
-        return {"id": "admin", "is_admin": True}
-    # обычный пользователь
-    user = await get_user_by_id(sub)
-    if user and user.get("is_active"):
-        return user
-    return None
-
-jwt_auth = JWTCookieAuth[dict](
-    retrieve_user_handler=retrieve_user,
-    token_secret = config.JWT_SECRET,
-    key = "token",
-    exclude=[
-        "/admin/login", "/health",
-        r"^/blog", 
-        r"^/chat", r"^/uploads",
-        r"^/auth/request-code", r"^/auth/verify-code", r"^/auth/complete-profile",
-        r"^/auth/google", r"^/auth/google/callback",
-        r"^/auth/yandex", r"^/auth/yandex/callback",
-        "/auth/logout", "/sitemap.xml", "/auth/me",
-        r"^/admin", "/profile"  # /me требует аутентификации, но guard сработает
-    ],
-)
-
-async def _get_user_from_token(connection: ASGIConnection):
-    """Извлекает пользователя из куки token (если есть и валиден)."""
-    token = connection.cookies.get("token")
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
-        user_id = payload.get("sub")
-        if user_id:
-            user = await get_user_by_id(user_id)
-            if user and user.get("is_active"):
-                return user
-    except Exception:
-        pass
-    return None
-
-async def require_auth(connection: ASGIConnection, handler: BaseRouteHandler):
-    """Guard для проверки авторизации (не требует middleware)."""
-    user = await _get_user_from_token(connection)
-    if not user:
-        raise NotAuthorizedException("Authentication required")
-    # Сохраняем пользователя в scope, чтобы он был доступен как request.user
-    connection.scope["user"] = user
-
-async def require_admin(connection: ASGIConnection, handler: BaseRouteHandler):
-    """Guard для проверки прав администратора (не требует middleware)."""
-    user = await _get_user_from_token(connection)
-    if not user or not user.get("is_admin"):
-        raise NotAuthorizedException("Admin access required")
-    connection.scope["user"] = user
 
 # ==================== LIFESPAN ====================
 def init_connection(conn):
@@ -203,11 +119,46 @@ async def lifespan(app: Litestar):
     
     # Инициализация Redis
     init_redis(app)
-
+    
     yield
     if blog_pg_pool:
         await blog_pg_pool.close()
 
+# ==================== АДМИН АУТЕНТИФИКАЦИЯ ====================
+
+class AdminUser(BaseModel):
+    id: str          # всегда 'admin'
+    name: str = "Administrator"
+
+async def retrieve_admin_user(token: Token, conn: ASGIConnection) -> Optional[AdminUser]:
+    # Токен считается валидным, если subject == 'admin'
+    return AdminUser(id="admin") if token.sub == "admin" else None
+
+jwt_admin_auth = JWTCookieAuth[AdminUser](
+    retrieve_user_handler=retrieve_admin_user,
+    token_secret=config.JWT_SECRET,
+    exclude=[
+        "/admin/login",
+        "/health",
+        # "/admin/logout",
+        
+        # 🔥 ВАЖНО: Используем r"^/..." (raw string с якорем начала строки)
+        r"^/blog",        # Матчит /blog, /blog/posts, /blog/posts/slug, /blog/tags
+                          # НО НЕ матчит /admin/blog/... !
+                          
+        r"^/chat",        # Матчит публичные эндпоинты чата (/chat/thread, /chat/upload)
+        
+        # Служебные пути Litestar/Swagger
+        "/openapi.json",
+        "/schema",
+        "/docs",
+        "/sitemap.xml",
+    ],
+)
+
+async def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:
+    if connection.route_handler.path.startswith("/admin") and connection.user is None:
+        raise NotAuthorizedException("Authentication required")
 
 # ==================== 
 def fix_mermaid_blocks(text: str) -> str:
@@ -752,121 +703,42 @@ async def blog_posts(request: Request, page: int = 1, limit: int = 10, tag: Opti
         "total_pages": total_pages
     }
 
-
 @get("/blog/posts/{slug:str}")
 async def blog_post(request: Request, slug: str) -> dict:
+    print("Origin header:", request.headers.get("origin"))
     post = await get_post_by_slug(slug)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     
-    # ... остальная обработка (content_markdown, related_posts...)
+    # Удаляем content_html, чтобы фронт использовал MarkdownRenderer
     post.pop("content_html", None)
+    
+    # Убедимся, что content_markdown есть
     if not post.get("content_markdown"):
         post["content_markdown"] = "Контент временно недоступен"
-    post["related_posts"] = []
-
-    # Количество лайков
-    from services.user_db import get_like_count, get_user_like
-    post["likes_count"] = await get_like_count(slug)
     
-    # Проверяем, лайкнул ли текущий пользователь
-    user = await _get_user_from_request(request)
-    post["likes_count"] = await get_like_count(slug)
-    post["comments_count"] = await get_comments_count(slug)
-    if user:
-        post["user_liked"] = await get_user_like(user["id"], slug)
-    else:
-        post["user_liked"] = False
+    # Добавляем пустые related_posts (можно реализовать позже)
+    post["related_posts"] = []
+    
     return post
+
 
 @get("/blog/tags")
 async def blog_tags(request: Request) -> List[dict]:
     return await get_all_tags()
 
-# ==================== КОММЕНТАРИИ И ЛАЙКИ ====================
-
-@get("/blog/{slug:str}/comments")
-async def get_post_comments(request: Request, slug: str, limit: int = 50, offset: int = 0) -> list:
-    """Публичный список комментариев к статье. Если авторизован, добавляет user_reaction."""
-    user = await _get_user_from_request(request)
-    comments = await get_comments(slug, limit, offset)
-    if user:
-        for c in comments:
-            reaction = await get_user_comment_reaction(user["id"], c["id"])
-            c["user_reaction"] = reaction
-    return comments
-
-@post("/blog/{slug:str}/comments", guards=[require_auth])
-async def add_post_comment(request: Request, slug: str, data: dict) -> dict:
-    """Добавить комментарий (только для авторизованных)."""
-    user = request.user
-    content = data.get("content")
-    if not content:
-        raise HTTPException(status_code=400, detail="Content required")
-    parent_id = data.get("parent_id")
-    comment = await create_comment(user["id"], slug, content, parent_id)
-    return comment
-
-@post("/blog/{slug:str}/like", guards=[require_auth])
-async def like_post(request: Request, slug: str) -> dict:
-    """Поставить лайк (только для авторизованных)."""
-    user = request.user
-    await add_like(user["id"], slug)
-    likes_count = await get_like_count(slug)
-    return {"likes_count": likes_count}
-
-@delete("/blog/{slug:str}/like", guards=[require_auth], status_code=200)
-async def unlike_post(request: Request, slug: str) -> dict:
-    """Убрать лайк (только для авторизованных)."""
-    user = request.user
-    await remove_like(user["id"], slug)
-    likes_count = await get_like_count(slug)
-    return {"likes_count": likes_count}
-
-@post("/blog/comments/{comment_id:str}/like", guards=[require_auth])
-async def like_comment(request: Request, comment_id: str) -> dict:
-    user = request.user
-    counts = await set_comment_reaction(user["id"], comment_id, "like")
-    return counts
-
-@post("/blog/comments/{comment_id:str}/dislike", guards=[require_auth])
-async def dislike_comment(request: Request, comment_id: str) -> dict:
-    user = request.user
-    counts = await set_comment_reaction(user["id"], comment_id, "dislike")
-    return counts
-
-@delete("/blog/comments/{comment_id:str}/reaction", guards=[require_auth], status_code=200)
-async def remove_comment_reaction(request: Request, comment_id: str) -> dict:
-    user = request.user
-    counts = await remove_comment_reaction(user["id"], comment_id)
-    return counts
-
-# ==================== БЛОГ Получение лайков ====================
-
-@get("/blog/{slug:str}/like-count")
-async def get_like_counts(slug: str) -> dict:
-    return {"count": await get_like_count(slug)}
-
-@get("/blog/{slug:str}/user-like")
-async def get_user_like(request: Request, slug: str) -> dict:
-    user = request.user
-    if not user:
-        return {"liked": False}
-    liked = await get_user_like(user["id"], slug)
-    return {"liked": liked}
-
 # ==================== БЛОГ ADMIN ====================
 
-@get("/admin/blog/posts", guards=[require_admin])
-async def admin_list_posts(request: Request, page: int = 1, limit: int = 20) -> dict:
+@get("/admin/blog/posts", guards=jwt_admin_auth.guards)
+async def admin_list_posts(request: Request[AdminUser, Token, Any], page: int = 1, limit: int = 20) -> dict:
     print("🚨 ADMIN_LIST_POSTS CALLED! User:", request.scope.get("user"))
     offset = (page - 1) * limit
     posts = await get_all_posts(limit=limit, offset=offset)
     total = await get_total_posts_count()
     return {"posts": posts, "total": total, "page": page, "limit": limit}
 
-@post("/admin/blog/posts", guards=[require_admin])
-async def admin_create_post(request: Request, data: dict) -> dict:
+@post("/admin/blog/posts", guards=jwt_admin_auth.guards)
+async def admin_create_post(request: Request[AdminUser, Token, Any], data: dict) -> dict:
     try:
         post = await create_post(data)
     except ValueError as e:
@@ -874,7 +746,7 @@ async def admin_create_post(request: Request, data: dict) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, "post": post}
 
-@put("/admin/blog/posts/{slug:str}", guards=[require_admin])
+@put("/admin/blog/posts/{slug:str}", guards=jwt_admin_auth.guards)
 async def admin_update_post(slug: str, data: dict) -> dict:
     try:
         post = await update_post(slug, data)
@@ -886,15 +758,15 @@ async def admin_update_post(slug: str, data: dict) -> dict:
         raise HTTPException(status_code=404, detail="Post not found")
     return {"success": True, "post": post}
 
-@delete("/admin/blog/posts/{slug:str}", status_code=200, guards=[require_admin])
+@delete("/admin/blog/posts/{slug:str}", status_code=200, guards=jwt_admin_auth.guards)
 async def admin_delete_post(slug: str) -> dict:
     deleted = await delete_post(slug)
     if not deleted:
         raise HTTPException(status_code=404, detail="Post not found")
     return {"success": True}
 
-@post("/admin/upload-image", guards=[require_admin])
-async def upload_image(request: Request, file: UploadFile) -> dict:
+@post("/admin/upload-image", guards=jwt_admin_auth.guards)
+async def upload_image(request: Request[AdminUser, Token, Any], file: UploadFile) -> dict:
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only images allowed")
     ext = Path(file.filename).suffix
@@ -979,44 +851,27 @@ async def sitemap_xml() -> Response:
         headers={"Cache-Control": "public, max-age=3600"}
     )
 
-# ==================== USER Profile ====================
+# ==================== SECURITY ====================
 
-class ProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    age: Optional[int] = None
-    user_type: Optional[str] = None  # 'user' или 'doctor'
+@post("/admin/login")
+async def admin_login(data: dict) -> Response:
+    password = data.get("password")
+    if password == config.ADMIN_PASSWORD:
+        # login() возвращает Response с установленной cookie
+        return jwt_admin_auth.login(identifier="admin", response_body={"success": True})
+    raise HTTPException(status_code=401, detail="Invalid password")
 
-@get("/profile", guards=[require_auth])
-async def get_profile(request: Request) -> dict:
-    print("update_profile request: ",request)
-
-    user = request.user
-    return {
-        "id": user["id"],
-        "email": user["email"],
-        "name": user.get("name"),
-        "age": user.get("age"),
-        "user_type": user.get("user_type"),
-        "is_admin": user.get("is_admin", False),
-        "auth_provider": user.get("auth_provider"),
-        "created_at": user.get("created_at"),
-    }
-
-@put("/profile", guards=[require_auth])
-async def update_profile(request: Request, data: ProfileUpdate) -> dict:
-    print("update_profile request: ",request)
-    user = await _get_user_from_request(request)
-    print("update_profile user: ",user)
-
-    updated = await update_user_profile_by_id(
-        user["id"],
-        name=data.name,
-        age=data.age,
-        user_type=data.user_type
+@post("/admin/logout")
+async def admin_logout() -> Response:
+    # Создаем пустой ответ
+    response = Response({"success": True})
+    
+    # Принудительно удаляем куку с явным указанием всех параметров
+    response.delete_cookie(
+        key="token",
+        path="/",
     )
-    if not updated:
-        raise HTTPException(status_code=404, detail="User not found")
-    return updated
+    return response
 
 # ==================== LITESTAR APP + SOCKET.IO ASGI ====================
 
@@ -1032,26 +887,15 @@ litestar_app = Litestar(
         blog_posts,
         blog_post,
         blog_tags,
+        admin_login,
+        admin_logout,
         admin_list_posts,
         admin_create_post,
         admin_update_post,
         admin_delete_post,
         upload_image,
         sitemap_xml,
-        health,
-        get_like_counts,
-        get_user_like,
-        get_post_comments,
-        add_post_comment,
-        like_comment,
-        dislike_comment,
-        remove_comment_reaction,
-        like_post,
-        unlike_post,
-        get_profile,
-        update_profile,
-        AuthController,
-        # BlogInteractionController,
+        health
     ],
     cors_config = CORSConfig(
         allow_origins=config.ALLOWED_ORIGINS,
@@ -1061,7 +905,7 @@ litestar_app = Litestar(
     ),
     debug=getattr(config, 'DEBUG', True),
     lifespan=[lifespan],
-    on_app_init=[jwt_auth.on_app_init],
+    on_app_init=[jwt_admin_auth.on_app_init],
 )
 
 asgi_app = socketio.ASGIApp(sio, other_asgi_app=litestar_app)

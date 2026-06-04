@@ -14,6 +14,7 @@ class ProjectConfig(BaseSettings):
     WORKERS: int =1
 
     PUBLIC_SITE_URL: str = "https://medexpertai.ru"
+    BACKEND_URL: str = ""
 
     HINDSIGHT_URL: str = "http://localhost:8888"
 
@@ -48,10 +49,26 @@ class ProjectConfig(BaseSettings):
     REDIS_CACHE_HOST: str = ""
     REDIS_CACHE_PORT: int = 0
     REDIS_PROXY: str = ""
+    REDIS_CACHE_URL: str = ""
 
     # База данных
     POSTGRES: str = ""
     POSTGRES_DICT: Optional[dict] = None
+
+    # ДБ Схема
+    DB_SCHEMA: str =  "medexpertai"
+
+    # OAuth
+    #https://console.cloud.google.com/auth/clients?hl=ru&project=medexpertai
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "299627162489-h9c8edsjpqtotmge2hf9l6l5g4gin9hj.apps.googleusercontent.com")
+    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "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")
+    #https://oauth.yandex.ru/client/9150cf7af4e44db086051b61a9f57aff
+    YANDEX_CLIENT_ID: str = os.getenv("YANDEX_CLIENT_ID", "9150cf7af4e44db086051b61a9f57aff")
+    YANDEX_CLIENT_SECRET: str = os.getenv("YANDEX_CLIENT_SECRET", "895a10f16a2845ff9beea596616e60c4")
+
+    # SendPulse
+    SENDPULSE_API_KEY: str = os.getenv("SENDPULSE_API_KEY", "")
+    SENDPULSE_API_SECRET: str = os.getenv("SENDPULSE_API_SECRET", "")
 
     # Deployments (оставлено для совместимости)
     LIST_OF_PRODUCT_CARD_DEPLOYMENT_ID: str = "cc893258-ac4b-48ca-8a00-6b0238c618b4"
@@ -68,18 +85,24 @@ class ProjectConfig(BaseSettings):
         if self.MODE == 'PROD':
             self.REDIS_MQ = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/2"
             self.HINDSIGHT_URL: str = "http://192.168.1.100:8888"
+            self.BACKEND_URL: str ="https://api.medexpertai.ru"
+            self.PUBLIC_SITE_URL: str ="https://medexpertai.ru"
             self.REDIS_CACHE_HOST = "192.168.1.100"
             self.REDIS_CACHE_PORT = 6379
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/0"
+            self.REDIS_CACHE_URL = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@192.168.1.100/7"
             self.POSTGRES = "postgres://postgres:cZejbGF7WE5Xr4KQsD83@192.168.1.51:5432/postgres"
             self.DEBUG = True
             self.WORKERS = 4
         else:
             self.REDIS_MQ = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@91.122.158.124:63798/2"
             self.HINDSIGHT_URL: str = "http://91.122.158.124:8888"
+            self.BACKEND_URL: str ="http://localhost:6575"
+            self.PUBLIC_SITE_URL: str ="http://localhost:5173"
             self.REDIS_CACHE_HOST = "91.122.158.124"
             self.REDIS_CACHE_PORT = 63799
             self.REDIS_PROXY = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@91.122.158.124:63799/0"
+            self.REDIS_CACHE_URL = "redis://default:f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5@91.122.158.124:63799/7"
             self.POSTGRES = "postgres://postgres:cZejbGF7WE5Xr4KQsD83@91.122.158.124:54329/postgres"
             self.DEBUG = True
             self.WORKERS = 1

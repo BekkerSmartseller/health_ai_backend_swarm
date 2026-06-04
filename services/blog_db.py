@@ -15,33 +15,34 @@ logger = logging.getLogger(__name__)
 
 # Глобальный пул соединений (инициализируется в lifespan)
 _pool: Optional[asyncpg.Pool] = None
-
+SCHEMA = config.DB_SCHEMA
 
 async def init_db(pool: asyncpg.Pool):
-    """Создаёт таблицу blog_posts, если её нет."""
     global _pool
     _pool = pool
-    create_table_sql = """
-    CREATE TABLE IF NOT EXISTS blog_posts (
-        id SERIAL PRIMARY KEY,
-        slug TEXT UNIQUE NOT NULL,
-        title TEXT NOT NULL,
-        content_markdown TEXT NOT NULL,
-        content_html TEXT NOT NULL,
-        excerpt TEXT,
-        featured_image TEXT,
-        og_image TEXT,
-        published_at TIMESTAMPTZ NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        tags JSONB NOT NULL DEFAULT '[]'::jsonb,
-        reading_time INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_blog_posts_slug ON blog_posts(slug);
-    CREATE INDEX IF NOT EXISTS idx_blog_posts_published_at ON blog_posts(published_at DESC);
-    """
     async with pool.acquire() as conn:
-        await conn.execute(create_table_sql)
-    logger.info("Table blog_posts ensured.")
+        # Создаём схему, если нет
+        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        # Таблица блога
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.blog_posts (
+                id SERIAL PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                content_markdown TEXT NOT NULL,
+                content_html TEXT NOT NULL,
+                excerpt TEXT,
+                featured_image TEXT,
+                og_image TEXT,
+                published_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+                reading_time INTEGER NOT NULL
+            )
+        """)
+        await conn.execute(f"CREATE INDEX IF NOT EXISTS idx_blog_posts_slug ON {SCHEMA}.blog_posts(slug)")
+        await conn.execute(f"CREATE INDEX IF NOT EXISTS idx_blog_posts_published_at ON {SCHEMA}.blog_posts(published_at DESC)")
+    logger.info("Table blog_posts ensured in schema medexpertai.")
 
 
 def _compute_reading_time(markdown_text: str) -> int:
@@ -60,28 +61,50 @@ def _generate_slug(title: str) -> str:
 
 
 async def get_all_posts(limit: int = 100, offset: int = 0, tag: Optional[str] = None) -> List[Dict]:
-    """Возвращает список статей с метаданными (без полного контента)."""
     async with _pool.acquire() as conn:
         if tag:
-            # поиск по тегу внутри JSONB массива
             rows = await conn.fetch(
-                """
-                SELECT id, slug, title, excerpt, featured_image, og_image,
-                       published_at, updated_at, tags, reading_time
-                FROM blog_posts
-                WHERE tags ? $1
-                ORDER BY published_at DESC
+                f"""
+                SELECT p.id, p.slug, p.title, p.excerpt, p.featured_image, p.og_image,
+                       p.published_at, p.updated_at, p.tags, p.reading_time,
+                       COALESCE(l.likes_count, 0) AS likes_count,
+                       COALESCE(c.comments_count, 0) AS comments_count
+                FROM {SCHEMA}.blog_posts p
+                LEFT JOIN (
+                    SELECT post_slug, COUNT(*) as likes_count
+                    FROM {SCHEMA}.blog_likes
+                    GROUP BY post_slug
+                ) l ON p.slug = l.post_slug
+                LEFT JOIN (
+                    SELECT post_slug, COUNT(*) as comments_count
+                    FROM {SCHEMA}.blog_comments
+                    GROUP BY post_slug
+                ) c ON p.slug = c.post_slug
+                WHERE p.tags ? $1
+                ORDER BY p.published_at DESC
                 LIMIT $2 OFFSET $3
                 """,
                 tag, limit, offset
             )
         else:
             rows = await conn.fetch(
-                """
-                SELECT id, slug, title, excerpt, featured_image, og_image,
-                       published_at, updated_at, tags, reading_time
-                FROM blog_posts
-                ORDER BY published_at DESC
+                f"""
+                SELECT p.id, p.slug, p.title, p.excerpt, p.featured_image, p.og_image,
+                       p.published_at, p.updated_at, p.tags, p.reading_time,
+                       COALESCE(l.likes_count, 0) AS likes_count,
+                       COALESCE(c.comments_count, 0) AS comments_count
+                FROM {SCHEMA}.blog_posts p
+                LEFT JOIN (
+                    SELECT post_slug, COUNT(*) as likes_count
+                    FROM {SCHEMA}.blog_likes
+                    GROUP BY post_slug
+                ) l ON p.slug = l.post_slug
+                LEFT JOIN (
+                    SELECT post_slug, COUNT(*) as comments_count
+                    FROM {SCHEMA}.blog_comments
+                    GROUP BY post_slug
+                ) c ON p.slug = c.post_slug
+                ORDER BY p.published_at DESC
                 LIMIT $1 OFFSET $2
                 """,
                 limit, offset
@@ -92,7 +115,7 @@ async def get_all_posts(limit: int = 100, offset: int = 0, tag: Optional[str] = 
 async def get_post_by_slug(slug: str) -> Optional[Dict]:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM blog_posts WHERE slug = $1",
+            f"SELECT * FROM {SCHEMA}.blog_posts WHERE slug = $1",
             slug
         )
     return dict(row) if row else None
@@ -127,8 +150,8 @@ async def create_post(data: Dict[str, Any]) -> Dict:
     async with _pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                """
-                INSERT INTO blog_posts
+                f"""
+                INSERT INTO {SCHEMA}.blog_posts
                 (slug, title, content_markdown, content_html, excerpt,
                 featured_image, og_image, published_at, updated_at, tags, reading_time)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10)
@@ -190,8 +213,8 @@ async def update_post(slug: str, data: Dict[str, Any]) -> Optional[Dict]:
     async with _pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                """
-                UPDATE blog_posts
+                f"""
+                UPDATE {SCHEMA}.blog_posts
                 SET title = $1,
                     content_markdown = $2,
                     content_html = $3,
@@ -224,7 +247,7 @@ async def update_post(slug: str, data: Dict[str, Any]) -> Optional[Dict]:
 
 async def delete_post(slug: str) -> bool:
     async with _pool.acquire() as conn:
-        result = await conn.execute("DELETE FROM blog_posts WHERE slug = $1", slug)
+        result = await conn.execute(f"DELETE FROM {SCHEMA}.blog_posts WHERE slug = $1", slug)
         return result == "DELETE 1"
 
 
@@ -232,9 +255,9 @@ async def get_all_tags() -> List[Dict[str, Any]]:
     """Возвращает список всех тегов с количеством статей."""
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT DISTINCT jsonb_array_elements_text(tags) AS tag, COUNT(*) AS count
-            FROM blog_posts
+            FROM {SCHEMA}.blog_posts
             GROUP BY tag
             ORDER BY tag
             """
@@ -244,7 +267,7 @@ async def get_all_tags() -> List[Dict[str, Any]]:
 async def get_total_posts_count(tag: Optional[str] = None) -> int:
     async with _pool.acquire() as conn:
         if tag:
-            row = await conn.fetchrow("SELECT COUNT(*) FROM blog_posts WHERE tags ? $1", tag)
+            row = await conn.fetchrow(f"SELECT COUNT(*) FROM {SCHEMA}.blog_posts WHERE tags ? $1", tag)
         else:
-            row = await conn.fetchrow("SELECT COUNT(*) FROM blog_posts")
+            row = await conn.fetchrow(f"SELECT COUNT(*) FROM {SCHEMA}.blog_posts")
     return row[0] if row else 0
