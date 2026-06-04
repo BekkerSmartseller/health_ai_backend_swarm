@@ -59,7 +59,7 @@ class ProjectConfig(BaseSettings):
     DB_SCHEMA: str =  "medexpertai"
 
     # OAuth
-    #https://console.cloud.google.com/auth/clients?hl=ru&project=medexpertai
+    #https://console.cloud.google.com/auth/clients?hl=ru&project=medexpertai 
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "299627162489-h9c8edsjpqtotmge2hf9l6l5g4gin9hj.apps.googleusercontent.com")
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "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")
     #https://oauth.yandex.ru/client/9150cf7af4e44db086051b61a9f57aff
