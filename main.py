@@ -1000,18 +1000,31 @@ async def llms_txt() -> Response:
     lines.append(f"- [Блог со статьями]({PUBLIC_SITE_URL}/blog)\n\n")
     
     # 2. Статьи блога (выборочно)
-    lines.append("## Статьи блога (выборочно)\n")
+    lines.append("## Статьи блога\n")
     if blog_pg_pool is not None:
         try:
-            async with blog_pg_pool.acquire(timeout=5.0) as conn:
-                rows = await conn.fetch(
-                    "SELECT slug, title FROM blog_posts ORDER BY published_at DESC LIMIT 50",
-                    timeout=5.0
-                )
-            for row in rows:
-                title = row['title']
-                slug = row['slug']
-                lines.append(f"- [{title}]({PUBLIC_SITE_URL}/blog/{slug})\n")
+            async with blog_pg_pool.acquire(timeout=30.0) as conn:
+                # Сначала узнаем общее количество статей
+                count_row = await conn.fetchval("SELECT COUNT(*) FROM blog_posts", timeout=5.0)
+                total = count_row or 0
+                # Получаем пачками по 1000 шт
+                batch_size = 1000
+                offset = 0
+                article_count = 0
+                while offset < total:
+                    rows = await conn.fetch(
+                        "SELECT slug, title FROM blog_posts ORDER BY published_at DESC LIMIT $1 OFFSET $2",
+                        batch_size, offset,
+                        timeout=15.0
+                    )
+                    if not rows:
+                        break
+                    for row in rows:
+                        title = row['title']
+                        slug = row['slug']
+                        lines.append(f"- [{title}]({PUBLIC_SITE_URL}/blog/{slug})\n")
+                        article_count += 1
+                    offset += batch_size
         except Exception as e:
             logger.error(f"[llms.txt] DB error: {e}")
             lines.append("  (статьи временно недоступны)\n")
