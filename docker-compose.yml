@@ -5,6 +5,7 @@ services:
       dockerfile: ./backend.Dockerfile
     environment:
       - MODE=PROD
+      - GOOGLE_CLIENT_ID=
     container_name: health-ai-backend
     restart: unless-stopped
     ports:

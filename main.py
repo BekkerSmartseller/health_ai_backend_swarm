@@ -135,7 +135,7 @@ jwt_auth = JWTCookieAuth[dict](
         r"^/auth/request-code", r"^/auth/verify-code", r"^/auth/complete-profile",
         r"^/auth/google", r"^/auth/google/callback",
         r"^/auth/yandex", r"^/auth/yandex/callback",
-        "/auth/logout", "/sitemap.xml", "/auth/me",
+        "/auth/logout", "/sitemap.xml", "/llms.txt", "/auth/me",
         r"^/admin", "/profile"  # /me требует аутентификации, но guard сработает
     ],
 )
@@ -979,6 +979,73 @@ async def sitemap_xml() -> Response:
         headers={"Cache-Control": "public, max-age=3600"}
     )
 
+
+# ==================== llms.txt ====================
+
+@get("/llms.txt", status_code=200)
+async def llms_txt() -> Response:
+    """
+    Генерирует llms.txt — файл для LLM-агентов.
+    Содержит описание ресурсов, доступных AI-помощникам.
+    """
+    PUBLIC_SITE_URL = getattr(config, 'PUBLIC_SITE_URL', 'https://medexpertai.ru')
+    
+    lines = ["# MedExpert AI — справочная информация для AI-ассистентов\n"]
+    lines.append("# Этот файл помогает AI-агентам и LLM лучше понимать структуру и содержимое сайта\n")
+    lines.append(f"> {PUBLIC_SITE_URL}\n\n")
+    
+    # 1. О проекте
+    lines.append("## О проекте\n")
+    lines.append("MedExpert AI — сервис расшифровки медицинских анализов крови с помощью искусственного интеллекта. ")
+    lines.append("AI учитывает пол, возраст, беременность, образ жизни пользователя. ")
+    lines.append("Сервис не ставит диагнозы, а предоставляет информационную интерпретацию.\n\n")
+    
+    # 2. Основные страницы
+    lines.append("## Основные страницы\n")
+    lines.append(f"- Главная: {PUBLIC_SITE_URL}/\n")
+    lines.append(f"- Чат с AI-помощником: {PUBLIC_SITE_URL}/chat\n")
+    lines.append(f"- Блог: {PUBLIC_SITE_URL}/blog\n\n")
+    
+    # 3. Статьи блога
+    lines.append("## Статьи блога\n")
+    if blog_pg_pool is not None:
+        try:
+            async with blog_pg_pool.acquire(timeout=5.0) as conn:
+                rows = await conn.fetch(
+                    "SELECT slug, title, excerpt FROM blog_posts ORDER BY published_at DESC LIMIT 50",
+                    timeout=5.0
+                )
+            for row in rows:
+                title = row['title']
+                slug = row['slug']
+                excerpt = row['excerpt'] or ''
+                excerpt_clean = excerpt[:200].replace('\n', ' ')
+                lines.append(f"- {title}: {PUBLIC_SITE_URL}/blog/{slug}\n")
+                if excerpt_clean:
+                    lines.append(f"  - Описание: {excerpt_clean}\n")
+        except Exception as e:
+            logger.error(f"[llms.txt] DB error: {e}")
+            lines.append("  (статьи временно недоступны)\n")
+    else:
+        lines.append("  (база данных блога недоступна)\n")
+    
+    lines.append("\n")
+    
+    # 4. Юридические страницы
+    lines.append("## Юридическая информация\n")
+    lines.append(f"- Политика конфиденциальности: {PUBLIC_SITE_URL}/privacy\n")
+    lines.append(f"- Условия использования: {PUBLIC_SITE_URL}/terms\n")
+    lines.append(f"- Публичная оферта: {PUBLIC_SITE_URL}/offer\n")
+    lines.append(f"- Информационная безопасность: {PUBLIC_SITE_URL}/security\n")
+    lines.append(f"- Политика возврата: {PUBLIC_SITE_URL}/refund\n")
+    
+    return Response(
+        content=''.join(lines),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
+
+
 # ==================== USER Profile ====================
 
 class ProfileUpdate(BaseModel):
@@ -1038,6 +1105,7 @@ litestar_app = Litestar(
         admin_delete_post,
         upload_image,
         sitemap_xml,
+        llms_txt,
         health,
         get_like_counts,
         get_user_like,
