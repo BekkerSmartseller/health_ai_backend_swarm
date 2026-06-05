@@ -990,39 +990,28 @@ async def llms_txt() -> Response:
     """
     PUBLIC_SITE_URL = getattr(config, 'PUBLIC_SITE_URL', 'https://medexpertai.ru')
     
-    lines = ["# MedExpert AI — справочная информация для AI-ассистентов\n"]
-    lines.append("# Этот файл помогает AI-агентам и LLM лучше понимать структуру и содержимое сайта\n")
-    lines.append(f"> {PUBLIC_SITE_URL}\n\n")
+    lines = ["# MedExpert AI — информационная интерпретация анализов крови\n"]
+    lines.append(f"> Сервис расшифровки медицинских анализов крови с помощью ИИ. Учитывает пол, возраст, беременность, образ жизни. **Не ставит диагнозы**, не заменяет врача. Предоставляет справочную информацию.\n\n")
     
-    # 1. О проекте
-    lines.append("## О проекте\n")
-    lines.append("MedExpert AI — сервис расшифровки медицинских анализов крови с помощью искусственного интеллекта. ")
-    lines.append("AI учитывает пол, возраст, беременность, образ жизни пользователя. ")
-    lines.append("Сервис не ставит диагнозы, а предоставляет информационную интерпретацию.\n\n")
-    
-    # 2. Основные страницы
+    # 1. Основные страницы
     lines.append("## Основные страницы\n")
-    lines.append(f"- Главная: {PUBLIC_SITE_URL}/\n")
-    lines.append(f"- Чат с AI-помощником: {PUBLIC_SITE_URL}/chat\n")
-    lines.append(f"- Блог: {PUBLIC_SITE_URL}/blog\n\n")
+    lines.append(f"- [Главная]({PUBLIC_SITE_URL}/)\n")
+    lines.append(f"- [Чат с AI-помощником]({PUBLIC_SITE_URL}/chat)\n")
+    lines.append(f"- [Блог со статьями]({PUBLIC_SITE_URL}/blog)\n\n")
     
-    # 3. Статьи блога
-    lines.append("## Статьи блога\n")
+    # 2. Статьи блога (выборочно)
+    lines.append("## Статьи блога (выборочно)\n")
     if blog_pg_pool is not None:
         try:
             async with blog_pg_pool.acquire(timeout=5.0) as conn:
                 rows = await conn.fetch(
-                    "SELECT slug, title, excerpt FROM blog_posts ORDER BY published_at DESC LIMIT 50",
+                    "SELECT slug, title FROM blog_posts ORDER BY published_at DESC LIMIT 50",
                     timeout=5.0
                 )
             for row in rows:
                 title = row['title']
                 slug = row['slug']
-                excerpt = row['excerpt'] or ''
-                excerpt_clean = excerpt[:200].replace('\n', ' ')
-                lines.append(f"- {title}: {PUBLIC_SITE_URL}/blog/{slug}\n")
-                if excerpt_clean:
-                    lines.append(f"  - Описание: {excerpt_clean}\n")
+                lines.append(f"- [{title}]({PUBLIC_SITE_URL}/blog/{slug})\n")
         except Exception as e:
             logger.error(f"[llms.txt] DB error: {e}")
             lines.append("  (статьи временно недоступны)\n")
@@ -1031,13 +1020,11 @@ async def llms_txt() -> Response:
     
     lines.append("\n")
     
-    # 4. Юридические страницы
+    # 3. Юридическая информация
     lines.append("## Юридическая информация\n")
-    lines.append(f"- Политика конфиденциальности: {PUBLIC_SITE_URL}/privacy\n")
-    lines.append(f"- Условия использования: {PUBLIC_SITE_URL}/terms\n")
-    lines.append(f"- Публичная оферта: {PUBLIC_SITE_URL}/offer\n")
-    lines.append(f"- Информационная безопасность: {PUBLIC_SITE_URL}/security\n")
-    lines.append(f"- Политика возврата: {PUBLIC_SITE_URL}/refund\n")
+    lines.append(f"- [Политика конфиденциальности]({PUBLIC_SITE_URL}/privacy)\n")
+    lines.append(f"- [Условия использования]({PUBLIC_SITE_URL}/terms)\n")
+    lines.append(f"- [Публичная оферта]({PUBLIC_SITE_URL}/offer)\n")
     
     return Response(
         content=''.join(lines),
