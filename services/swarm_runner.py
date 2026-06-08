@@ -43,11 +43,13 @@ async def run_swarm_and_emit(
     timezone: str = "UTC",
     locale: str = "en",
     location: dict | None = None,
+    save_to_history: bool = True,
 ):
     """Запускает swarm-граф и отправляет события через Socket.IO."""
     room = thread_id
     try:
-        await memory_layer.save_message(thread_id, thread_id, "user", user_message)
+        if save_to_history:
+            await memory_layer.save_message(thread_id, thread_id, "user", user_message)
         try:
             tz = ZoneInfo(timezone)
         except Exception:

@@ -29,6 +29,9 @@ class ProjectConfig(BaseSettings):
     SANIC_JWT_SECRET: str = '4EK0FG+o8+c7tzBNVfjpMkNDi5yARAAKzQlk1O7IKoxLu8nF2EdAh6s5TwpHwrdWT0R'
     REDIS_CACHE_PASSWORD: str = "f7a9cd93-e976-4b13-a3fb-dcac9ete0cf5"
 
+    # Tavily Search API
+    TAVILY_API_KEY: str = "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"
+
     # DeepSeek AI настройки
     DEEPSEEK_API_KEY: str = "sk-6db2a26cf2e646ddb58a8e8ca63bfefd"
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"

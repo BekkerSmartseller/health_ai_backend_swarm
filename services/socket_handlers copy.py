@@ -6,8 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -17,6 +15,7 @@ logger = logging.getLogger(__name__)
 memory_layer = None
 active_sessions: Dict[str, str] = {}
 run_swarm_and_emit_fn = None
+run_medical_swarm_and_emit_fn = None
 file_processor = None
 hindsight_client = None
 # Множество thread_id'ов, для которых уже отправлено приветствие
@@ -27,10 +26,11 @@ FAQ_BANK_ID = "faq-assistant"
 NORM_BLOOD_BANK_ID = "norm-blood"
 
 
-def init_socket_handlers(ml, run_fn, fp=None, hc=None):
-    global memory_layer, run_swarm_and_emit_fn, file_processor, hindsight_client
+def init_socket_handlers(ml, run_fn, run_medical_fn=None, fp=None, hc=None):
+    global memory_layer, run_swarm_and_emit_fn, run_medical_swarm_and_emit_fn, file_processor, hindsight_client
     memory_layer = ml
     run_swarm_and_emit_fn = run_fn
+    run_medical_swarm_and_emit_fn = run_medical_fn
     file_processor = fp
     hindsight_client = hc
 
@@ -90,7 +90,7 @@ def register_handlers(sio):
         locale = data.get("locale", "en")
         location = data.get("location")
         
-        asyncio.create_task(run_swarm_and_emit_fn(
+        asyncio.create_task(run_medical_swarm_and_emit_fn(
             thread_id, user_text, timezone=timezone, locale=locale, location=location,
         ))
 
@@ -110,7 +110,7 @@ def register_handlers(sio):
         file_path = upload_dir / filename
         file_path.write_bytes(base64.b64decode(file_b64))
         user_message = f"Пользователь загрузил файл {filename}. Файл сохранён по пути {file_path}. Проанализируй его содержимое."
-        asyncio.create_task(run_swarm_and_emit_fn(thread_id, user_message))
+        asyncio.create_task(run_medical_swarm_and_emit_fn(thread_id, user_message))
 
     @sio.event
     async def upload_files(sid, data):
@@ -167,59 +167,18 @@ def register_handlers(sio):
                 aggregated = file_processor.aggregate_analyses(results)
                 await sio.emit("file_processed", aggregated, room=thread_id)
                 
-                # Сохраняем анализы в Hindsight — одним батчем с метаданными
+                # Сохраняем анализы в Hindsight
                 bank_id = f"user_{thread_id}"
-                analysis_id = str(uuid.uuid4())
-                
-                # Определяем дату анализа из метаданных пациента или текущую
-                patient_data = aggregated.get("patient", {})
-                analysis_date = patient_data.get("date", "") or datetime.now().strftime("%Y-%m-%d")
-                
-                # Собираем типы анализов
-                analysis_types = list(set(
-                    a.get("test_name", "").split("(")[0].strip() or "Общий анализ"
-                    for a in aggregated.get("analyses", [])
-                    if a.get("test_name")
-                ))
-                
-                # Формируем полный документ со всеми метаданными
-                full_data_doc = {
-                    "type": "full_analyses_batch",
-                    "analysis_id": analysis_id,
-                    "analysis_date": analysis_date,
-                    "analysis_types": analysis_types,
-                    "user_id": thread_id,
-                    "total_files": aggregated["total_files"],
-                    "processed": aggregated["processed"],
-                    "total_analyses": aggregated["total_analyses"],
-                    "total_ignored": aggregated["total_ignored"],
-                    "errors": aggregated.get("errors", []),
-                    "analyses": aggregated["analyses"],
-                    "ignored": aggregated.get("ignored", []),
-                    "patient": patient_data,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                await hindsight_client.retain(
-                    bank_id,
-                    json.dumps(full_data_doc, ensure_ascii=False),
-                    metadata={
-                        "type": "full_analyses_batch",
-                        "analysis_id": analysis_id,
-                        "analysis_date": analysis_date,
-                        "total_analyses": str(aggregated["total_analyses"]),
-                        "thread_id": thread_id,
-                        "user_id": thread_id,
-                    }
-                )
-                
-                # Если есть информация о пациенте, сохраняем метаданные
-                if patient_data:
+                for analysis in aggregated.get("analyses", []):
                     try:
-                        await hindsight_client.save_patient_metadata(bank_id, {
-                            **patient_data,
-                            "analysis_id": analysis_id,
-                            "analysis_date": analysis_date,
-                        })
+                        await hindsight_client.save_analysis(bank_id, analysis)
+                    except Exception as e:
+                        logger.error(f"Failed to save analysis: {e}")
+                
+                # Если есть информация о пациенте, сохраняем
+                if aggregated.get("patient"):
+                    try:
+                        await hindsight_client.save_patient_metadata(bank_id, aggregated["patient"])
                     except Exception as e:
                         logger.error(f"Failed to save patient metadata: {e}")
                 
@@ -233,30 +192,20 @@ def register_handlers(sio):
                 )
                 if aggregated.get("errors"):
                     summary += f"- Ошибки: {', '.join(aggregated['errors'])}\n"
+                summary += "\nЧто делаем дальше?\n"
                 
-                # Отправляем в swarm — передаём полные данные напрямую
-                patient_str = ""
-                patient_needs_info = False
-                missing_fields = []
-                if patient_data:
-                    patient_str = f"Пациент: {json.dumps(patient_data, ensure_ascii=False)}"
-                    for field in ["name", "age", "sex"]:
-                        if not patient_data.get(field):
-                            missing_fields.append(field)
-                            patient_needs_info = True
+                # Сохраняем результат в Hindsight как сообщение ассистента
+                await hindsight_client.retain(
+                    bank_id,
+                    f"[assistant]: {summary}",
+                    metadata={"role": "assistant", "thread_id": thread_id, "type": "file_processing_result"}
+                )
                 
-                asyncio.create_task(run_swarm_and_emit_fn(
+                # Отправляем в swarm для дальнейшей обработки
+                asyncio.create_task(run_medical_swarm_and_emit_fn(
                     thread_id, 
                     f"Файлы загружены и обработаны. {summary} "
-                    f"{patient_str}\n\n"
-                    f"ID анализа: {analysis_id}\n"
-                    f"Дата анализа: {analysis_date}\n\n"
-                    f"ДАННЫЕ АНАЛИЗОВ (всего {aggregated['total_analyses']} шт.):\n"
-                    f"{json.dumps(full_data_doc, ensure_ascii=False)}\n"
-                    f"{'Обрати внимание: у пациента не хватает данных: ' + ', '.join(missing_fields) if missing_fields else 'Данные о пациенте полные.'}\n\n"
-                    f"Вызови check_results_analysis с этими данными для валидации и расшифровки. "
-                    f"Если данных о пациенте не хватает — используй get_analyses_data('{bank_id}') для поиска в Hindsight.",
-                    save_to_history=False,
+                    f"Данные: {json.dumps(aggregated, ensure_ascii=False)[:1000]}",
                 ))
                     
             except Exception as e:
@@ -278,22 +227,21 @@ def register_handlers(sio):
         payload = data.get("payload", {})
         
         # Маппинг кнопок на действия
-        print("button_click: ",button_id)
         if button_id == "upload_analyses":
             # Симулируем сообщение пользователя "Загрузить анализы"
-            asyncio.create_task(run_swarm_and_emit_fn(
+            asyncio.create_task(run_medical_swarm_and_emit_fn(
                 thread_id, "Загрузить анализы"
             ))
         elif button_id == "upload_format":
-            asyncio.create_task(run_swarm_and_emit_fn(
+            asyncio.create_task(run_medical_swarm_and_emit_fn(
                 thread_id, "В каком формате загружать анализы?"
             ))
         elif button_id == "unique_features":
-            asyncio.create_task(run_swarm_and_emit_fn(
+            asyncio.create_task(run_medical_swarm_and_emit_fn(
                 thread_id, "Какие мои уникальные возможности?"
             ))
         elif button_id == "start_decode":
-            asyncio.create_task(run_swarm_and_emit_fn(
+            asyncio.create_task(run_medical_swarm_and_emit_fn(
                 thread_id, "Расшифровать анализы"
             ))
         elif button_id == "files_selected":
@@ -302,7 +250,7 @@ def register_handlers(sio):
         else:
             # Любая другая кнопка — передаём её текст как сообщение
             text = payload.get("text", button_id)
-            asyncio.create_task(run_swarm_and_emit_fn(
+            asyncio.create_task(run_medical_swarm_and_emit_fn(
                 thread_id, text
             ))
 

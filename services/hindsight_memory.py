@@ -15,40 +15,40 @@ logger = logging.getLogger(__name__)
 BANK_CONFIG = {
   "version": "1",
   "bank": {
-    "retain_mission": "Извлеките предпочтения пользователя, его распорядок дня, заявленные факты о себе, сделанные им запросы, интересующие его темы, запланированные события, обязательства, упомянутых им людей и любую личную информацию, которой он делится,а также любые обязательства или последующие действия. Отслеживайте, что он запрашивает неоднократно и что для него важно.Игнорировать пустую болтовню и лишние слова.",
+    "retain_mission": "Извлеките предпочтения пользователя, анализы, его распорядок дня, заявленные факты о себе, сделанные им запросы, интересующие его темы, запланированные события, обязательства, упомянутых им людей и любую личную информацию, которой он делится,а также любые обязательства или последующие действия. Отслеживайте, что он запрашивает неоднократно и что для него важно.Игнорировать пустую болтовню и лишние слова.",
     "enable_observations": True,
     "observations_mission": "Отслеживайте стабильные предпочтения пользователя, повторяющиеся действия,стиль общения,  важных для него людей и отношения, а также то, как меняются его приоритеты и потребности с течением времени."
   },
-  "mental_models": [
-    {
-      "id": "user-profile",
-      "name": "User Profile",
-      "source_query": "Что нам известно об этом пользователе? Какой стиль общения у пользователя? Какой предположительно тип личности(например INFJ (Заступник/Провидец))? Как нужно с ним общаться в диалоге? Заполняй его профиль: Имя, Дата рожения, Время рождения, Место рождения,Солнечный знак, Тип личности",
-      "max_tokens": 3000,
-      "trigger": {
-        "refresh_after_consolidation": True
-      }
-    },
-    {
-      "id": "active-tasks",
-      "name": "Active Tasks & Commitments",
-      "source_query": "Какие задачи, обязательства или последующие действия пользователь отслеживает в данный момент? Какие сроки или обещания были даны? Какие темы, задачи или последующие действия остаются открытыми или нерешенными из прошлых разговоров?",
-      "max_tokens": 8000,
-      "trigger": {
-        "refresh_after_consolidation": True
-      }
-    },
-    {
-      "id": "personality-type",
-      "name": "Personality type",
-      "source_query": "Каковы его предпочтения, распорядок дня, кто ему важен и как он предпочитает получать помощь?",
-      "max_tokens": 8000,
-      "trigger": {
-        "refresh_after_consolidation": True
-      }
-    }
+#   "mental_models": [
+#     {
+#       "id": "user-profile",
+#       "name": "User Profile",
+#       "source_query": "Что нам известно об этом пользователе? Какой стиль общения у пользователя? Какой предположительно тип личности(например INFJ (Заступник/Провидец))? Как нужно с ним общаться в диалоге? Заполняй его профиль: Имя, Дата рожения, Время рождения, Место рождения,Солнечный знак, Тип личности",
+#       "max_tokens": 3000,
+#       "trigger": {
+#         "refresh_after_consolidation": True
+#       }
+#     },
+#     {
+#       "id": "active-tasks",
+#       "name": "Active Tasks & Commitments",
+#       "source_query": "Какие задачи, обязательства или последующие действия пользователь отслеживает в данный момент? Какие сроки или обещания были даны? Какие темы, задачи или последующие действия остаются открытыми или нерешенными из прошлых разговоров?",
+#       "max_tokens": 8000,
+#       "trigger": {
+#         "refresh_after_consolidation": True
+#       }
+#     },
+#     {
+#       "id": "personality-type",
+#       "name": "Personality type",
+#       "source_query": "Каковы его предпочтения, распорядок дня, кто ему важен и как он предпочитает получать помощь?",
+#       "max_tokens": 8000,
+#       "trigger": {
+#         "refresh_after_consolidation": True
+#       }
+#     }
 
-  ]
+#   ]
 }
 
 class HindsightMemoryLayer:
@@ -62,11 +62,12 @@ class HindsightMemoryLayer:
 
     async def _ensure_bank_initialized(self, user_id: str):
         bank_id = await self._get_bank_id(user_id)
+
         if bank_id in self._initialized_banks:
             return
         exists = await self.client.bank_exists(bank_id)
+
         if not exists:
-            logger.info(f"Initializing bank {bank_id} with default config")
             success = await self.client.import_bank(bank_id, BANK_CONFIG)
             if success:
                 self._initialized_banks.add(bank_id)
@@ -104,12 +105,18 @@ class HindsightMemoryLayer:
     async def get_conversation_history(self, user_id: str, thread_id: str, limit: int = 20) -> List[Dict]:
         await self._ensure_bank_initialized(user_id)
         bank_id = await self._get_bank_id(user_id)
+        logger.info(f"get_conversation_history bank_id={bank_id} thread_id={thread_id}")
         try:
-            docs_meta = await self.client.get_documents(bank_id, limit=100, offset=0)
+            docs_meta = await self.client.get_documents(bank_id, limit=200, offset=0)
+            logger.info(f"get_conversation_history docs_meta count={len(docs_meta)}")
+            if not docs_meta:
+                return []
+
             filtered = [
                 doc for doc in docs_meta
                 if doc.get("document_metadata", {}).get("thread_id") == thread_id
             ]
+            logger.info(f"get_conversation_history filtered by thread_id count={len(filtered)} from {len(docs_meta)}")
             if not filtered:
                 return []
 
@@ -118,7 +125,6 @@ class HindsightMemoryLayer:
                 return await self.client.get_document(bank_id, doc_id)
 
             full_docs = await asyncio.gather(*[fetch_full(d) for d in filtered])
-            # logger.info(f"history:{full_docs}")
             messages = []
             for doc in full_docs:
                 meta = doc.get("document_metadata", {})
@@ -138,9 +144,10 @@ class HindsightMemoryLayer:
                     "timestamp": timestamp
                 })
             messages.sort(key=lambda x: x.get("timestamp", ""))
+            logger.info(f"get_conversation_history messages count={len(messages)}")
             return messages[-limit:] if limit > 0 else messages
         except Exception as e:
-            logger.error(f"Failed to get conversation history: {e}")
+            logger.error(f"Failed to get conversation history: {e}", exc_info=True)
             return []
 
     async def extract_user_facts(self, user_id: str) -> Dict[str, Any]:

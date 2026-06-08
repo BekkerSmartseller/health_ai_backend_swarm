@@ -53,6 +53,9 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import MemorySaver
 from config import config
 
+# Схема для чекпоинтов
+CHECKPOINTER_SCHEMA = "medexpertai_checkpointer"
+
 logger = logging.getLogger(__name__)
 
 

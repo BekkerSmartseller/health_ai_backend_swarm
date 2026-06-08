@@ -36,6 +36,14 @@ lxml>=5.1
 html2text>=2024.0
 markdown>=3.6
 
+# Tavily Search API
+tavily-python>=0.5
+
+# OCR / File processing
+PyMuPDF>=1.25
+Pillow>=10.0
+aiohttp-socks>=0.9
+
 # Data processing (for MKB loading)
 pandas>=2.2
 openpyxl>=3.1

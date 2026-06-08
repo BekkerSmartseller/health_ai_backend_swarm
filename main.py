@@ -3,6 +3,7 @@
 Новый сервер с Socket.IO и swarm‑агентами.
 Поддерживает потоковую передачу (streaming) через события socket.io.
 Интегрирован HindsightMemoryLayer и PostgreSQL checkpointer.
+Медицинский граф для расшифровки анализов.
 """
 import asyncio
 import logging
@@ -22,7 +23,9 @@ import asyncpg
 from config import config
 
 from services.hindsight_memory import HindsightMemoryLayer
+from services.hindsight_client import HindsightClient
 from graph.swarm_workflow import get_compiled_graph
+# from graph.medical_swarm_workflow import get_compiled_medical_graph, run_medical_swarm_and_emit as run_medical_swarm, init_medical_globals
 
 from services.user_db import init_user_db, get_user_by_id
 from services.blog_db import init_db as init_blog_db
@@ -30,12 +33,14 @@ from services.blog_db import init_db as init_blog_db
 from routes.auth import AuthController, init_redis
 from routes.blog import BlogController
 from routes.admin_blog import AdminBlogController
-from routes.chat import ChatController, init_chat_memory
+from routes.chat import ChatController, init_chat_memory, init_chat_services
 from routes.profile import ProfileController
 from routes.misc import MiscController, init_misc_pool
 
 from services.swarm_runner import init_swarm_runner
 from services.socket_handlers import init_socket_handlers, register_handlers
+from services.file_processor import FileProcessor
+from services.web_search_tavily import TavilySearchClient
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +52,16 @@ load_dotenv()
 swarm_graph = None
 memory_layer = None
 blog_pg_pool = None
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+medical_hindsight_client = None
+medical_file_processor = None
+medical_tavily_client = None
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins=[
+        'http://localhost:5173',
+        'https://medexpertai.ru'
+    ]
+)
 active_sessions: Dict[str, str] = {}
 
 
@@ -89,11 +103,14 @@ def init_connection(conn):
 @asynccontextmanager
 async def lifespan(app: Litestar):
     global swarm_graph, memory_layer, blog_pg_pool
+    global medical_hindsight_client, medical_file_processor, medical_tavily_client
+
+    # 1. Основные сервисы
     memory_layer = HindsightMemoryLayer(config.HINDSIGHT_URL)
     langfuse_handler = CallbackHandler()
     swarm_graph = await get_compiled_graph()
 
-    # Инициализация PostgreSQL для блога
+    # 2. PostgreSQL для блога
     conn_string = config.POSTGRES
     if conn_string:
         blog_pg_pool = await asyncpg.create_pool(conn_string, min_size=1, max_size=5, init=init_connection)
@@ -107,19 +124,35 @@ async def lifespan(app: Litestar):
     else:
         logger.warning("POSTGRES connection string missing, blog will use JSON fallback")
 
-    # Инициализация Redis
+    # 3. Redis
     init_redis(app)
 
-    # Передаём зависимости в вынесенные модули
+    # 4. Медицинские сервисы
+    medical_hindsight_client = HindsightClient(config.HINDSIGHT_URL)
+    medical_file_processor = FileProcessor()
+    medical_tavily_client = TavilySearchClient()
+
+    # 5. Инициализация медицинского графа
+    # medical_graph = await get_compiled_medical_graph()
+    # init_medical_globals(medical_hindsight_client, medical_file_processor, medical_tavily_client, sio)
+
+    # 6. Передаём зависимости в вынесенные модули
     init_chat_memory(memory_layer)
+    init_chat_services(medical_hindsight_client, medical_file_processor)
     init_swarm_runner(swarm_graph, memory_layer, langfuse_handler, sio)
 
-    # Импортируем run_swarm_and_emit после инициализации swarm_runner
+    # 7. Socket.IO обработчики (с медицинскими)
     from services.swarm_runner import run_swarm_and_emit
-    init_socket_handlers(memory_layer, run_swarm_and_emit)
-
-    # Регистрируем Socket.IO обработчики
+    init_socket_handlers(
+        ml=memory_layer,
+        run_fn=run_swarm_and_emit,
+        # run_medical_fn=run_medical_swarm,
+        fp=medical_file_processor,
+        hc=medical_hindsight_client,
+    )
     register_handlers(sio)
+
+    logger.info("Medical swarm and all services initialized successfully")
 
     yield
     if blog_pg_pool:
