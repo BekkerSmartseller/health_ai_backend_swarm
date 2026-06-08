@@ -43,6 +43,7 @@ tavily-python>=0.5
 PyMuPDF>=1.25
 Pillow>=10.0
 aiohttp-socks>=0.9
+playwright>=1.59
 
 # Data processing (for MKB loading)
 pandas>=2.2

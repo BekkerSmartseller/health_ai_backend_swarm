@@ -1,6 +1,7 @@
 # health_ai_backend_swarm/routes/chat.py
 """
-Chat controller — эндпоинты для работы с чатом (история, загрузка файлов, создание thread, анализы).
+Chat controller — эндпоинты для работы с чатом (история, загрузка файлов, создание thread, анализы,
+а также экспорт в PDF).
 """
 import uuid
 import json
@@ -8,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import List
 from litestar import Controller, get, post, Request
+from litestar.response import Response
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 memory_layer = None
 hindsight_client = None
 file_processor = None
+pdf_generator = None
 
 
 def init_chat_memory(ml):
@@ -26,6 +29,11 @@ def init_chat_services(hc, fp):
     global hindsight_client, file_processor
     hindsight_client = hc
     file_processor = fp
+
+
+def init_pdf_generator(pdf_gen):
+    global pdf_generator
+    pdf_generator = pdf_gen
 
 
 class ChatController(Controller):
@@ -117,3 +125,44 @@ class ChatController(Controller):
         """Создаёт новый thread_id и возвращает его."""
         thread_id = str(uuid.uuid4())
         return {"thread_id": thread_id}
+
+    @post("/export-pdf")
+    async def export_pdf(self, request: Request) -> Response:
+        """
+        Принимает HTML с инлайновыми стилями, генерирует PDF через Playwright.
+        Body: { "html": "<!DOCTYPE html>..." }
+        Returns: application/pdf
+        """
+        global pdf_generator
+        if not pdf_generator:
+            return Response(
+                content=b'{"error":"PDF generator not initialized"}',
+                status_code=503,
+                media_type="application/json",
+            )
+        try:
+            body = await request.json()
+            html = body.get("html", "")
+            if not html:
+                return Response(
+                    content=b'{"error":"No HTML provided"}',
+                    status_code=400,
+                    media_type="application/json",
+                )
+            pdf_bytes = await pdf_generator.generate(html)
+            return Response(
+                content=pdf_bytes,
+                status_code=200,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": "attachment; filename=response.pdf",
+                    "Content-Length": str(len(pdf_bytes)),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Export PDF error: {e}", exc_info=True)
+            return Response(
+                content=json.dumps({"error": str(e)}).encode(),
+                status_code=500,
+                media_type="application/json",
+            )

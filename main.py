@@ -33,7 +33,8 @@ from services.blog_db import init_db as init_blog_db
 from routes.auth import AuthController, init_redis
 from routes.blog import BlogController
 from routes.admin_blog import AdminBlogController
-from routes.chat import ChatController, init_chat_memory, init_chat_services
+from routes.chat import ChatController, init_chat_memory, init_chat_services, init_pdf_generator
+from services.pdf_generator import PDFGenerator
 from routes.profile import ProfileController
 from routes.misc import MiscController, init_misc_pool
 
@@ -105,6 +106,11 @@ async def lifespan(app: Litestar):
     global swarm_graph, memory_layer, blog_pg_pool
     global medical_hindsight_client, medical_file_processor, medical_tavily_client
 
+    # PDF Generator (Playwright)
+    pdf_gen = PDFGenerator()
+    await pdf_gen.start()
+    init_pdf_generator(pdf_gen)
+
     # 1. Основные сервисы
     memory_layer = HindsightMemoryLayer(config.HINDSIGHT_URL)
     langfuse_handler = CallbackHandler()
@@ -155,6 +161,8 @@ async def lifespan(app: Litestar):
     logger.info("Medical swarm and all services initialized successfully")
 
     yield
+    if pdf_gen:
+        await pdf_gen.stop()
     if blog_pg_pool:
         await blog_pg_pool.close()
 
