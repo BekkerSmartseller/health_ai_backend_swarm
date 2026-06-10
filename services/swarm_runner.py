@@ -74,8 +74,13 @@ async def run_swarm_and_emit(
         messages = []
         if user_profile:
             messages.append({"role": "system", "content": f"Информация о пользователе: {user_profile}"})
+        # Фильтруем tool-сообщения — они требуют предшествующего tool_calls,
+        # который может отсутствовать в истории, вызывая ошибку 400
         for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            role = msg.get("role", "")
+            if role == "tool":
+                continue
+            messages.append({"role": role, "content": msg.get("content", "")})
         messages.append({"role": "user", "content": augmented_message})
 
         configurable = {"configurable": {"thread_id": thread_id}}

@@ -1,3 +1,4 @@
+# health_ai_backend_swarm/graph/swarm_workflow.py
 """
 Multi-Agent System with Aggregation, Web Search, Langfuse Tracing,
 Automatic Fact-Checking and Recursion Limit (Async Version)
@@ -25,11 +26,22 @@ from config import config as app_config
 from services.hindsight_client import HindsightClient
 from services.file_processor import FileProcessor
 from services.web_search_tavily import TavilySearchClient
+from services.knowledge_search import search_all_references, init_search_llm, _call_llm
 
 # ==================== Глобальные ссылки ====================
 hindsight_client: Optional[HindsightClient] = None
 file_processor: Optional[FileProcessor] = None
 tavily_client: Optional[TavilySearchClient] = None
+
+
+def init_swarm_globals(hc: HindsightClient, fp: Optional[FileProcessor] = None, tc: Optional[TavilySearchClient] = None):
+    """Инициализирует глобальные объекты из main.py."""
+    global hindsight_client, file_processor, tavily_client
+    hindsight_client = hc
+    if fp:
+        file_processor = fp
+    if tc:
+        tavily_client = tc
 
 FAQ_BANK_ID = "faq-assistant"
 NORM_BLOOD_BANK_ID = "norm-blood"
@@ -111,7 +123,8 @@ def extract_language_and_text(request: str) -> tuple[str, Optional[str]]:
 async def assistant_faq_tool(query: str) -> str:
     """Ищет ответы на вопросы о возможностях ассистента в FAQ-банке Hindsight."""
     try:
-        results = await hindsight_client.faq_query(FAQ_BANK_ID, query, limit=3)
+        results = await hindsight_client.faq_query(FAQ_BANK_ID, query, limit=10)
+        logger.info(f"assistant_faq_tool results: {results}")
         if results:
             for r in results:
                 try:
@@ -249,8 +262,100 @@ async def check_results_analysis(raw_data: str) -> str:
     return response.content
 
 @log_tool_async
-async def verify_interpretation(report: str) -> str:
-    """Проверяет качество интерпретации анализов."""
+async def search_references_tool(raw_data: str) -> str:
+    """
+    Полный инструмент проверки анализов.
+    Принимает JSON: {"analyses": [...], "patient": {...}, "bank_id": "..."}
+    Ищет референсные значения в базе знаний через LLM, сравнивает с данными,
+    возвращает результат.
+    """
+    try:
+        data = json.loads(raw_data)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid JSON", "quality": "needs_review"})
+
+    analyses = data.get("analyses", [])
+    patient_from_data = data.get("patient", {})
+    bank_id = data.get("bank_id", "")
+
+    if not hindsight_client:
+        return json.dumps({"error": "Hindsight client not available", "quality": "needs_review"})
+
+    # Шаг 1: Ищем референсы через LLM-поиск
+    logger.info(f"🔬 search_references_tool: ищу референсы для {len(analyses)} анализов, bank_id={bank_id}")
+    try:
+        ref_result = await search_all_references(hindsight_client, bank_id, analyses, patient_info=patient_from_data)
+    except Exception as e:
+        logger.error(f"search_all_references error: {e}", exc_info=True)
+        ref_result = {"success": False, "groups": [], "total_found": 0}
+
+    # Шаг 2: LLM сравнивает данные с референсами и формирует итоговый JSON
+    logger.info("🧠 Формирую итоговый отчёт через LLM...")
+
+    llm_prompt = f"""
+    Ты — медицинский эксперт по валидации анализов. Проанализируй предоставленные данные.
+
+    ИНФОРМАЦИЯ О ПАЦИЕНТЕ: {json.dumps(patient_from_data, ensure_ascii=False)}
+
+    АНАЛИЗЫ ({len(analyses)} шт.):
+    {json.dumps(analyses, ensure_ascii=False)[:8000]}
+
+    НАЙДЕННЫЕ РЕФЕРЕНСНЫЕ ЗНАЧЕНИЯ ИЗ БАЗЫ ЗНАНИЙ:
+    {json.dumps(ref_result, ensure_ascii=False, default=str)[:8000]}
+
+    Выполни:
+    1. Для каждого анализа сравни его ref_range с найденными референсами. Если ref_range совпадает — ref_match=true, иначе false.
+    2. Если в найденных референсах есть нормы для показателя — добавь их как norm_blood_ref.
+    3. Отметь, какие поля пациента отсутствуют (name, age, sex, date).
+    4. Если референсы лаборатории отличаются от найденных в базе — добавь в ref_issues.
+    5. Оцени качество данных: "good" если данные полны и референсы корректны, "needs_review" если есть проблемы.
+
+    Ответь строго в формате JSON (без пояснений):
+    {{
+        "total_found": число,
+        "valid_count": число,
+        "ignored_count": число,
+        "analyses": [ {{"test_name": "...", "value": "...", "unit": "...", "ref_range": "...", "status": "...", "norm_blood_ref": {{...}} (если есть), "ref_match": true/false}} ],
+        "ignored_items": [],
+        "patient": {{"name": "...", "age": "...", "sex": "...", "date": "...", "lab_name": "..."}},
+        "needs_patient_info": true/false,
+        "missing_fields": ["name", "age", "sex", "date"],
+        "ref_issues": [{{"test_name": "...", "note": "..."}}],
+        "quality": "good" | "needs_review"
+    }}
+    """
+    try:
+        response = await llm.ainvoke(llm_prompt)
+        # Извлекаем JSON из ответа
+        result_text = response.content if hasattr(response, 'content') else str(response)
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0].strip()
+        result = json.loads(result_text)
+        logger.info(f"✅ Итоговый отчёт: {len(result.get('analyses', []))} анализов, quality={result.get('quality')}")
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Ошибка формирования отчёта LLM: {e}", exc_info=True)
+        # Fallback: возвращаем сырые данные
+        return json.dumps({
+            "total_found": len(analyses),
+            "valid_count": len(analyses),
+            "ignored_count": 0,
+            "analyses": analyses,
+            "ignored_items": [],
+            "patient": patient_from_data,
+            "needs_patient_info": not bool(patient_from_data.get("name")),
+            "missing_fields": [],
+            "ref_issues": [],
+            "quality": "needs_review",
+            "note": "Не удалось проверить референсы через LLM"
+        }, ensure_ascii=False)
+
+
+@log_tool_async
+async def _analysis_interpretation(report: str) -> str:
+    """Анализирует анализы и отправляет ответ пользователю"""
     try:
         data = json.loads(report)
     except (json.JSONDecodeError, TypeError):
@@ -269,7 +374,7 @@ async def verify_interpretation(report: str) -> str:
 
 @log_tool_async
 async def web_search_tavily_tool(query: str) -> str:
-    """Ищет информацию о препаратах через Tavily API."""
+    """Ищет информацию в интернете в достоверных источниках."""
     try:
         result = await tavily_client.search_medical(query)
         try:
@@ -404,7 +509,7 @@ async def fact_check(statement: str, search_results_summary: str) -> str:
         {search_results_summary}
 
         Оцени по следующим критериям:
-        - Авторитетность источников (домены .gov, .edu, известные научные журналы – высокое доверие)
+        - Авторитетность источников (домены .gov, .edu, известные научные или медицинские журналы – высокое доверие)
         - Свежесть данных (если старше 3 лет для быстро меняющихся тем – снижает доверие)
         - Наличие противоречий между источниками
         - Внутренняя согласованность
@@ -425,7 +530,7 @@ async def fact_check(statement: str, search_results_summary: str) -> str:
 
 med_agent = create_agent(
     model=llm,
-    tools=[get_user_data, assistant_faq_tool, check_results_analysis, verify_interpretation, web_search_tavily_tool, web_search, fact_check],
+    tools=[get_user_data, assistant_faq_tool, search_references_tool, _analysis_interpretation, web_search_tavily_tool, web_search, fact_check],
     name="med_agent",
     system_prompt=(
         """Ты ассистент по расшифровки анализов. ТЫ отвечаешь только на вопросы медицинской тематике, здоровья, питания, БАДов и возможностях сервиса расшифровки анализов для помощи пользователю.
@@ -445,29 +550,109 @@ med_agent = create_agent(
         3. Ты можешь выполнять несколько поисков с разными запросами.
         4. **ОБЯЗАТЕЛЬНО после каждого вызова `web_search` вызывай `fact_check`**, передавая туда ключевое утверждение из найденного текста и сами результаты.
         5. Анализируй результаты `fact_check`: если `confidence` < 0.7 или `verdict` = 'сомнительно'/'недостаточно данных' — сделай дополнительный поиск, используя `suggested_next_search`.
+        5.1 Если не можешь найти актуальные данные через `web_search`, то для более сложных запросов используй `web_search_tavily_tool`
         6. Сообщай о количестве найденных страниц и сколько откроешь.
         7. Составляй развёрнутый структурированный ответ с таблицами.
         8. Указывай источники и обоснование выбора.
 
-        Общие Правила:
+        ## Правила работы c загрузкой анализов (данными анализов)
+        1. Ты не расшифровываешь анализы - для этого есть специальный инструмент `_analysis_interpretation`
+        2. После загрузки файлов ты получаешь сообщение с bank_id (например, "user_<thread_id>").
+        3. Когда пользователь загружает анализы - данные проходят обработку OCR и тебе нужно проверить данные на достоверность, через инструмент `search_references_tool`
+        4. После получения данных вызывай `search_references_tool` с полным JSON (analyses, patient, bank_id).
+        5. НЕ ПЫТАЙСЯ анализировать неполные данные из сообщения пользователя.
+        6. ВСЕГДА вызывай `get_user_data(bank_id)`, чтобы получить информацию о пациенте.
+        7. Используй `search_references_tool` только с полными данными, которые ты получил через `get_analyses_data`.
+        8. После проверки анализов и данных профиля, если не хватает каких данных для полноты ты должен их запросить у пользователя 
+        9. Учти, что пользователь может загрузить данные разных пациентов и данные разных анализов (моча, кровь, копрограмму и т.д.), поэтому тебе нужно сруктурировать данные. 
+        10. Когда полностью соберешь все данные и проверишь достоверность референсов через внутренню базу знаний, сформируй пользователю ответ, какие анализы загрузил, дату анализов, пациента и т.д., в каком количестве показателей
+        11. В ответе пользователю дай сводку в виде круговых диаграмм, flowchart, mindmap и таблиц.
+        12. Также в ответе предлагаешь действие в виде кнопок: [Загрузить еще анализы, Расшифровать анализы ]
+        13. Пример сообщения:
+            Отлично! ✅ Валидация пройдена успешно. Референсы подтверждены, качество данных — отличное.
+            # 📋 СВОДКА ЗАГРУЖЕННЫХ АНАЛИЗОВ
+            Пациент: Крутой Алексей Юрьевич | Возраст: 21 год | Пол: Мужской
+            Лаборатория: МЕДЭКСПЕРТ | Дата: 22.04.2026
+            ```mermaid
+            pie title Соотношение показателей (всего 46)
+                "✅ В норме (35)" : 76
+                "⬆️ Повышено (9)" : 20
+                "⬇️ Снижено (2)" : 4
+            ```
+            ---
+            ## 📊 Что загружено
+            | Блок анализов | Кол-во | Статус |
+            |:-------------:|:------:|:------:|
+            | 🩸 Общий анализ крови | 24 показателя | Есть отклонения |
+            | 🧪 Биохимия крови | 14 показателей | Есть отклонения |
+            | 🩸 СОЭ | 1 | ✅ Норма |
+            | 🩺 Липидный профиль | 5 показателей | ⚠️ Есть отклонения |
+            | 🦠 СРБ | 1 | ✅ Норма |
+            | 💧 Мочевая кислота/мочевина/креатинин | 3 | ✅ Норма |
+            ---
+            ## ⚠️ Ключевые отклонения
+            ### 🟢 Повышены (9 показателей)
+            | Показатель | Результат | Норма | Отклонение |
+            |-----------|:---------:|:-----:|:----------:|
+            | 🔥 АлАт | 65 | 0–40 ед/л | ⬆️ +62.5% |
+            | 🔥 АсАт | 90 | 0–40 ед/л | ⬆️ +125% |
+            | 🧈 Холестерин общий | 5.46 | 3.10–5.20 | ⬆️ +5% |
+            | 🧈 ЛПНП | 3.51 | <3.37 | ⬆️ +4% |
+            | 🧈 Триглицериды | 1.91 | 0.50–1.70 | ⬆️ +12% |
+            | 🧈 Индекс атерогенности | 4.1 | 1.98–2.51 | ⬆️ +63% |
+            | 🩸 MPV (объем тромбоцитов) | 13.4 | 9–13 фл | ⬆️ +3% |
+            | 🩸 P-LCR (крупные тромбоциты) | 49.7 | 13–43% | ⬆️ +16% |
+            | 🩸 Лимфоциты % | 46 | 19–37% | ⬆️ +24% |
+            ### 🔴 Снижены (2 показателя)
+            | Показатель | Результат | Норма | Отклонение |
+            |-----------|:---------:|:-----:|:----------:|
+            | 🩸 Нейтрофилы (абс.) | 1.79 | 1.88–6.48 | ⬇️ -5% |
+            | 🩸 Нейтрофилы % | 40.6 | 47–72% | ⬇️ -14% |
+            ---
+            ### 🎯 Предварительная картина (без полной расшифровки)
+            ```mermaid
+            mindmap
+            root((Анализы. Алексей, 21 год))
+                Печень
+                АлАт 65 ⬆️
+                АсАт 90 ⬆️
+                Билирубин ✅
+                Липидный профиль
+                Холестерин ⬆️
+                ЛПНП ⬆️
+                Триглицериды ⬆️
+                Индекс атерогенности ⬆️
+                Тромбоциты
+                MPV ⬆️
+                P-LCR ⬆️
+                Лейкоцитарная формула
+                Нейтрофилы ⬇️
+                Лимфоциты ⬆️
+            ```
+            ---
+            ### 💡 Что дальше?
+
+            | Действие | Описание |
+            |:--------:|----------|
+            | 🔍 Расшифровать анализы | Полная интерпретация с выводами и рекомендациями |
+            | 📁 Загрузить ещё | Добавить другие анализы (гормоны, витамины и т.д.) |
+
+            Что выберете? 😊
+
+        ## Общие Правила:
         1. Приветствуй пользователя с кнопками: Загрузить анализы | Формат загрузки | Мои возможности
         2. Если вопрос о возможностях ассистента → используй assistant_faq_tool
         3. Если 'Загрузить анализы' → дай инструкцию
-        4. Если просят расшифровать → ответь что передашь аналитику
+        4. Если просят расшифровать анализы → вызывай инстумент `_analysis_interpretation`
         5. Если о препарате/нутрицевтике → ответь что передашь веб-поиску
         6. На общие вопросы отвечай сам
         7. **Запрещено** писать пользователю фразы типа «передаю запрос», «сейчас переключу» и т.д. – просто вызывай инструмент.
         8. ИСпользуй актуальную дату и год из контекста. Не придумывай год и не полагайся на внутренние знания о дате.
         9. Составляй развёрнутый структурированный ответ с таблицами, диаграмами, графиками где это уместно.
+        10. Сервис MedExpert AI расшифровывает только анализы крови, мочи, кала, зева и слюны. Снимки МРТ, УЗИ и т.д. пока не расшифровывает, но функционал в будущем будет реализован.
+        11. Если вопрос требует действий, то всегда выводи кнопки. НАпример пользователь просит загрузить еще анализы или куда загружать, тебе нужно вывести кнопку: Загрузить анализы
         Кнопки в формате: [Кнопка: текст]
         Не извиняйся. Используй русский язык.
-
-        ## Правила работы с данными анализов (ВАЖНО!)
-        После загрузки файлов ты получаешь сообщение с bank_id (например, "user_<thread_id>").
-        НЕ ПЫТАЙСЯ анализировать неполные данные из сообщения пользователя.
-        ВСЕГДА вызывай `get_user_data(bank_id)`, чтобы получить информацию о пациенте.
-        После получения данных вызывай `check_results_analysis` с полным JSON (analyses, patient, bank_id).
-        Используй `check_results_analysis` только с полными данными, которые ты получил через `get_analyses_data`.
 
         ## Создание Mermaid диаграмм
         Если ответ включает описание процесса, архитектуры системы, последовательности действий, иерархии или блок-схемы, **ОБЯЗАТЕЛЬНО** добавьте Mermaid диаграмму для визуализации.

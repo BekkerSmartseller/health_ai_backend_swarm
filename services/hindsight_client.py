@@ -77,26 +77,71 @@ class HindsightClient:
         return ""
 
     async def recall(self, bank_id: str, query: str, limit: int = 5) -> List[str]:
-        """Семантический поиск."""
+        """Семантический поиск (возвращает тексты)."""
+        results = await self.recall_raw(bank_id, None, query=query, limit=limit)
+        texts = []
+        for r in results:
+            if isinstance(r, str):
+                texts.append(r)
+            elif isinstance(r, dict):
+                texts.append(r.get("content", r.get("text", json.dumps(r))))
+        return texts[:limit]
+
+    async def recall_raw(self, bank_id: str, payload: dict = None, *,
+                         query: str = None, limit: int = 5,
+                         types: list = None, tags: list = None,
+                         max_tokens: int = 4096, budget: str = "mid",
+                         include_entities: bool = False) -> list:
+        """
+        Семантический поиск. Возвращает сырые результаты (list диктов).
+        Можно передать готовый payload или параметры по отдельности.
+        """
         url = f"{self.base_url}/v1/default/banks/{bank_id}/memories/recall"
-        payload = {"query": query, "budget": "mid"}
+
+        if payload is None:
+            payload = {
+                "query": query or "",
+                "budget": budget,
+                "max_tokens": max_tokens,
+                "types": types or ["world"],
+            }
+            if tags:
+                payload["tags"] = tags
+                payload["tags_match"] = "any"
+            if include_entities:
+                payload["include"] = {"entities": {"max_tokens": 500}}
+
+        logger.info(f"🔍 RECALL_RAW: bank={bank_id}, query='{payload.get('query', '')}', "
+                    f"types={payload.get('types')}, tags={payload.get('tags')}, "
+                    f"budget={payload.get('budget')}, max_tokens={payload.get('max_tokens')}")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload) as resp:
+                    response_text = await resp.text()
                     if resp.status == 200:
-                        data = await resp.json()
-                        results = []
-                        for r in data.get("results", []):
-                            if isinstance(r, str):
-                                results.append(r)
-                            elif isinstance(r, dict) and "content" in r:
-                                results.append(r["content"])
-                            elif hasattr(r, "content"):
-                                results.append(r.content)
-                        return results[:limit]
+                        try:
+                            data = json.loads(response_text)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ RECALL_RAW JSON parse error: {e}")
+                            return []
+                        results = data.get("results", [])
+                        entities = data.get("entities") or {}
+                        logger.info(f"📊 RECALL_RAW: {len(results)} results, {len(entities) if isinstance(entities, dict) else 0} entities")
+                        # Форматируем результат
+                        out = []
+                        for r in results:
+                            if isinstance(r, dict):
+                                r["_entities"] = entities
+                                out.append(r)
+                            elif isinstance(r, str):
+                                out.append({"text": r, "_entities": entities})
+                        return out[:limit] if limit else out
+                    else:
+                        logger.error(f"❌ RECALL_RAW non-200: status={resp.status}, body={response_text[:500]}")
+                        return []
         except Exception as e:
-            logger.error(f"Recall error: {e}")
-        return []
+            logger.error(f"❌ RECALL_RAW exception: {e}", exc_info=True)
+            return []
 
     async def get_documents(self, bank_id: str, limit: int = 100, offset: int = 0) -> List[Dict]:
         data = await self._api_get(f"/v1/default/banks/{bank_id}/documents", params={"limit": limit, "offset": offset}) or []
@@ -246,66 +291,6 @@ class HindsightClient:
         logger.info(f"FAQ bank {bank_id} initialized with {len(faq_items)} items")
         return True
 
-    async def init_norm_blood_bank(self, bank_id: str) -> bool:
-        """Инициализирует банк эталонных референсных значений."""
-        exists = await self.bank_exists(bank_id)
-        if exists:
-            return True
-        norm_config = {
-            "version": "1",
-            "bank": {
-                "retain_mission": "Храните эталонные референсные значения медицинских анализов.",
-                "enable_observations": False,
-            },
-            "mental_models": []
-        }
-        success = await self.import_bank(bank_id, norm_config)
-        if not success:
-            return False
-        # Стандартные референсы
-        norms = [
-            {"test_name": "Гемоглобин (HGB)", "male": "130-160 г/л", "female": "120-140 г/л"},
-            {"test_name": "Эритроциты (RBC)", "male": "4.0-5.0×10¹²/л", "female": "3.5-4.7×10¹²/л"},
-            {"test_name": "Лейкоциты (WBC)", "value": "4.0-9.0×10⁹/л"},
-            {"test_name": "Тромбоциты (PLT)", "value": "180-320×10⁹/л"},
-            {"test_name": "Гематокрит (HCT)", "male": "40-48%", "female": "36-42%"},
-            {"test_name": "СОЭ (ESR)", "male": "2-10 мм/ч", "female": "2-15 мм/ч"},
-            {"test_name": "Глюкоза", "value": "3.3-5.5 ммоль/л"},
-            {"test_name": "Общий холестерин", "value": "3.0-5.2 ммоль/л"},
-            {"test_name": "ЛПНП", "value": "до 3.3 ммоль/л"},
-            {"test_name": "ЛПВП", "male": ">1.0 ммоль/л", "female": ">1.2 ммоль/л"},
-            {"test_name": "Триглицериды", "value": "0.5-1.7 ммоль/л"},
-            {"test_name": "АЛТ", "male": "до 41 Ед/л", "female": "до 31 Ед/л"},
-            {"test_name": "АСТ", "male": "до 37 Ед/л", "female": "до 31 Ед/л"},
-            {"test_name": "Билирубин общий", "value": "3.4-20.5 мкмоль/л"},
-            {"test_name": "Креатинин", "male": "62-115 мкмоль/л", "female": "53-97 мкмоль/л"},
-            {"test_name": "Мочевина", "value": "2.5-8.3 ммоль/л"},
-            {"test_name": "Мочевая кислота", "male": "200-420 мкмоль/л", "female": "140-350 мкмоль/л"},
-            {"test_name": "Общий белок", "value": "66-83 г/л"},
-            {"test_name": "Альбумин", "value": "35-52 г/л"},
-            {"test_name": "Калий", "value": "3.5-5.1 ммоль/л"},
-            {"test_name": "Натрий", "value": "136-145 ммоль/л"},
-            {"test_name": "Кальций", "value": "2.15-2.50 ммоль/л"},
-            {"test_name": "Железо", "male": "11.6-31.3 мкмоль/л", "female": "9.0-30.4 мкмоль/л"},
-            {"test_name": "Ферритин", "male": "20-250 мкг/л", "female": "10-120 мкг/л"},
-            {"test_name": "Витамин D", "value": "30-100 нг/мл"},
-            {"test_name": "Витамин B12", "value": "200-900 пг/мл"},
-            {"test_name": "Фолиевая кислота", "value": "3.1-20.5 нг/мл"},
-            {"test_name": "ТТГ", "value": "0.4-4.0 мМЕ/л"},
-            {"test_name": "Т4 свободный", "value": "9-22 пмоль/л"},
-            {"test_name": "Т3 свободный", "value": "2.6-5.7 пмоль/л"},
-            {"test_name": "С-реактивный белок", "value": "до 5 мг/л"},
-            {"test_name": "Гликированный гемоглобин", "value": "4.0-6.0%"},
-        ]
-        for norm in norms:
-            content = json.dumps(norm, ensure_ascii=False)
-            await self.retain(bank_id, content, metadata={
-                "type": "norm_blood",
-                "test_name": norm.get("test_name", ""),
-            })
-        logger.info(f"Norm-blood bank {bank_id} initialized with {len(norms)} norms")
-        return True
-
     async def search_norm_blood(self, bank_id: str, test_name: str) -> Optional[Dict]:
         """Ищет эталонный референс по названию теста."""
         results = await self.recall(bank_id, test_name, limit=3)
@@ -316,23 +301,6 @@ class HindsightClient:
                     return data
             except (json.JSONDecodeError, TypeError):
                 pass
-        # Fallback: точный поиск по документам
-        docs = await self.get_documents(bank_id, limit=100)
-        for doc in docs:
-            meta = doc.get("document_metadata", {})
-            if meta.get("type") == "norm_blood":
-                full = await self.get_document(bank_id, doc["id"])
-                try:
-                    text = full.get("original_text", "")
-                    if text:
-                        data = json.loads(text)
-                        if test_name.lower() in data.get("test_name", "").lower():
-                            data["doc_id"] = doc["id"]
-                            data["source"] = "norm_blood"
-                            data["verified"] = True
-                            return data
-                except (json.JSONDecodeError, TypeError):
-                    pass
         return None
 
     async def save_web_search_result(self, bank_id: str, query: str, content: str) -> str:

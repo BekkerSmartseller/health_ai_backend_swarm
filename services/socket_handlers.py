@@ -36,12 +36,11 @@ def init_socket_handlers(ml, run_fn, fp=None, hc=None):
 
 
 async def ensure_faq_and_norm_banks():
-    """Инициализирует FAQ и norm-blood банки при старте."""
+    """Инициализирует FAQ банк при старте."""
     try:
         if hindsight_client:
             await hindsight_client.init_faq_bank(FAQ_BANK_ID)
-            await hindsight_client.init_norm_blood_bank(NORM_BLOOD_BANK_ID)
-            logger.info("FAQ and norm-blood banks initialized")
+            logger.info("FAQ bank initialized")
     except Exception as e:
         logger.warning(f"Failed to init banks: {e}")
 
@@ -166,19 +165,29 @@ def register_handlers(sio):
                 # Отправляем результат обработки
                 aggregated = file_processor.aggregate_analyses(results)
                 await sio.emit("file_processed", aggregated, room=thread_id)
-                
+
+                # Проверка: если анализы не найдены — файл не медицинский
+                total_analyses = aggregated.get("total_analyses", 0)
+                if total_analyses == 0:
+                    await sio.emit("chat_message", {
+                        "role": "assistant",
+                        "content": "❌ Загруженный файл не содержит медицинских анализов. Пожалуйста, загрузите файл с результатами лабораторных исследований.",
+                    }, room=thread_id)
+                    return
+
                 # Сохраняем анализы в Hindsight — одним батчем с метаданными
                 bank_id = f"user_{thread_id}"
                 analysis_id = str(uuid.uuid4())
                 
                 # Определяем дату анализа из метаданных пациента или текущую
-                patient_data = aggregated.get("patient", {})
+                patient_data = aggregated.get("patient") or {}
                 analysis_date = patient_data.get("date", "") or datetime.now().strftime("%Y-%m-%d")
                 
                 # Собираем типы анализов
+                analyses_list = aggregated.get("analyses") or []
                 analysis_types = list(set(
                     a.get("test_name", "").split("(")[0].strip() or "Общий анализ"
-                    for a in aggregated.get("analyses", [])
+                    for a in analyses_list
                     if a.get("test_name")
                 ))
                 

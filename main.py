@@ -138,6 +138,14 @@ async def lifespan(app: Litestar):
     medical_file_processor = FileProcessor()
     medical_tavily_client = TavilySearchClient()
 
+    # Инициализируем глобальные ссылки в swarm_workflow
+    from graph.swarm_workflow import init_swarm_globals, llm as swarm_llm
+    init_swarm_globals(medical_hindsight_client, medical_file_processor, medical_tavily_client)
+
+    # Инициализируем LLM для умного поиска референсов
+    from services.knowledge_search import init_search_llm, search_all_references
+    init_search_llm(swarm_llm)
+
     # 5. Инициализация медицинского графа
     # medical_graph = await get_compiled_medical_graph()
     # init_medical_globals(medical_hindsight_client, medical_file_processor, medical_tavily_client, sio)
